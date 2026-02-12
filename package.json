@@ -1,0 +1,32 @@
+{
+  "name": "codex-claudecode-proxy",
+  "version": "0.1.0",
+  "description": "npx installer for running CLIProxyAPI as local proxy for Claude Code using Codex OAuth token",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pinion05/codex-claudecode-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pinion05/codex-claudecode-proxy/issues"
+  },
+  "homepage": "https://github.com/pinion05/codex-claudecode-proxy#readme",
+  "bin": {
+    "codex-claudecode-proxy": "bin/codex-claudecode-proxy.js"
+  },
+  "type": "module",
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "oauth",
+    "proxy",
+    "CLIProxyAPI"
+  ]
+}
+
