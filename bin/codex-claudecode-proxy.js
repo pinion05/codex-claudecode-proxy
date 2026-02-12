@@ -560,7 +560,7 @@ function promptYesNo(question) {
 
 async function installFlow(opts) {
   if (process.platform !== "darwin") {
-    fail("macOS only (LaunchAgents 기반 설치).");
+    fail("macOS only (LaunchAgents-based install).");
   }
 
   const homeDir = os.homedir();
@@ -588,12 +588,12 @@ async function installFlow(opts) {
   }
 
   if (!opts.yes) {
-    log("아래 변경을 수행합니다:");
-    log(`- CLIProxyAPI 설치: ${proxyBin}`);
+    log("This will make the following changes:");
+    log(`- Install CLIProxyAPI: ${proxyBin}`);
     log(`- LaunchAgents: ${plistProxy}, ${plistSync}`);
-    log(`- Claude Code 설정 수정: ${claudeSettingsPath}`);
-    log(`- zshrc 수정: ${zshrcPath}`);
-    const ok = promptYesNo("진행할까요? (y/N) ");
+    log(`- Update Claude Code settings: ${claudeSettingsPath}`);
+    log(`- Update zshrc: ${zshrcPath}`);
+    const ok = promptYesNo("Continue? (y/N) ");
     if (!ok) fail("cancelled", 2);
   }
 
@@ -712,7 +712,7 @@ async function uninstallFlow(opts) {
   const zshrcPath = path.join(homeDir, ".zshrc");
 
   if (!opts.yes) {
-    const ok = promptYesNo("LaunchAgents 제거 + ~/.zshrc 블록 제거를 진행할까요? (y/N) ");
+    const ok = promptYesNo("Remove LaunchAgents + ~/.zshrc block? (y/N) ");
     if (!ok) fail("cancelled", 2);
   }
 
