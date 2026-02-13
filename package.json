@@ -18,6 +18,9 @@
   "files": [
     "bin/"
   ],
+  "os": [
+    "darwin"
+  ],
   "engines": {
     "node": ">=18"
   },
@@ -29,4 +32,3 @@
     "CLIProxyAPI"
   ]
 }
-

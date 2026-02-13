@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { spawnSync } from "node:child_process";
 
 const DEFAULT_PORT = 8317;
@@ -28,21 +29,21 @@ function fail(msg, code = 1) {
 
 function usage(code = 0) {
   const txt = `Usage:
-  codex-claudecode-proxy [command] [--yes] [--port <n>] [--model <name>] [--no-zshrc] [--no-claude-settings]
+  codex-claudecode-proxy [command]
 
 Commands:
   install      Install + configure + start (default)
   start        Start proxy LaunchAgent
   stop         Stop proxy + sync LaunchAgents
   status       Show status
-  uninstall    Remove LaunchAgents + zshrc block (keeps proxy files)
-  purge        Uninstall + remove proxy files + clean Claude Code settings
+  uninstall    Remove LaunchAgents + restore Claude Code settings (keeps proxy files)
+  purge        Uninstall + remove proxy files
   help         Show this help
 
 Examples:
-  npx -y codex-claudecode-proxy@latest --yes
+  npx -y codex-claudecode-proxy@latest
   npx -y codex-claudecode-proxy@latest status
-  npx -y codex-claudecode-proxy@latest purge --yes
+  npx -y codex-claudecode-proxy@latest purge
 `;
   console.log(txt);
   process.exit(code);
@@ -52,11 +53,6 @@ function parseArgs(argv) {
   const args = [...argv];
   const out = {
     command: "install",
-    yes: false,
-    port: DEFAULT_PORT,
-    model: DEFAULT_MODEL,
-    noZshrc: false,
-    noClaudeSettings: false,
   };
 
   if (args.length > 0 && !args[0].startsWith("-")) {
@@ -66,32 +62,8 @@ function parseArgs(argv) {
   while (args.length > 0) {
     const a = args.shift();
     if (a === "--help" || a === "-h" || a === "help") return { ...out, command: "help" };
-    if (a === "--yes" || a === "-y") {
-      out.yes = true;
-      continue;
-    }
-    if (a === "--port") {
-      const v = args.shift();
-      if (!v) fail("--port requires a value");
-      const n = Number(v);
-      if (!Number.isInteger(n) || n <= 0 || n > 65535) fail(`invalid --port: ${v}`);
-      out.port = n;
-      continue;
-    }
-    if (a === "--model") {
-      const v = args.shift();
-      if (!v) fail("--model requires a value");
-      out.model = v;
-      continue;
-    }
-    if (a === "--no-zshrc") {
-      out.noZshrc = true;
-      continue;
-    }
-    if (a === "--no-claude-settings") {
-      out.noClaudeSettings = true;
-      continue;
-    }
+    // Backward compatibility: allow legacy "non-interactive" flags as no-ops.
+    if (a === "--yes" || a === "-y") continue;
     fail(`unknown arg: ${a}`);
   }
 
@@ -208,6 +180,68 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function readPortFromProxyConfig(configFile) {
+  if (!exists(configFile)) return null;
+  try {
+    const m = readText(configFile).match(/^\s*port:\s*(\d+)\s*$/m);
+    if (!m) return null;
+    const n = Number(m[1]);
+    if (!Number.isInteger(n) || n <= 0 || n > 65535) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
+async function isLocalPortFree(port) {
+  return await new Promise((resolve) => {
+    const srv = net.createServer();
+    // Don't keep the process alive just for this check.
+    srv.unref();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1" }, () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+async function findAvailableLocalPort(preferredPort, scan = 20) {
+  const start = Number(preferredPort);
+  if (!Number.isInteger(start) || start <= 0 || start > 65535) return DEFAULT_PORT;
+
+  for (let i = 0; i <= scan; i += 1) {
+    const p = start + i;
+    if (p <= 0 || p > 65535) break;
+    // If our proxy is already responding, keep that port.
+    if (await proxyHealthcheck(p)) return p;
+    if (await isLocalPortFree(p)) return p;
+  }
+
+  // Fallback: ask the OS for an ephemeral free port.
+  return await new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once("error", () => resolve(DEFAULT_PORT));
+    srv.listen({ port: 0, host: "127.0.0.1" }, () => {
+      const addr = srv.address();
+      const p = addr && typeof addr === "object" ? addr.port : DEFAULT_PORT;
+      srv.close(() => resolve(p));
+    });
+  });
+}
+
+async function resolveProxyPort({ configFile }) {
+  const fromConfig = readPortFromProxyConfig(configFile);
+  if (fromConfig) {
+    // If the configured port is already healthy, keep it.
+    if (await proxyHealthcheck(fromConfig)) return fromConfig;
+    // If the port is free, keep it.
+    if (await isLocalPortFree(fromConfig)) return fromConfig;
+    warn(`configured port is busy (${fromConfig}); selecting a free port`);
+  }
+  return await findAvailableLocalPort(DEFAULT_PORT);
+}
+
 async function proxyHealthcheck(port) {
   try {
     const ctrl = new AbortController();
@@ -241,96 +275,6 @@ async function verifyReasoningEffort(port, model) {
     }
   }
   return false;
-}
-
-function zshrcBlock({ port }) {
-  return `
-
-# >>> codex-cli-proxy auto-start >>>
-unalias claude 2>/dev/null || true
-
-_claude_proxy_healthcheck() {
-  curl -fsS -m 2 "http://127.0.0.1:${port}/v1/models" >/dev/null 2>&1
-}
-
-_claude_ensure_proxy() {
-  local label="com.\${USER}.cli-proxy-api"
-  local plist="\${HOME}/Library/LaunchAgents/\${label}.plist"
-  local log_file="\${HOME}/.cli-proxy-api/cli-proxy-api.log"
-  local uid
-  uid="$(id -u)"
-
-  if _claude_proxy_healthcheck; then
-    echo "[proxy][CANCEL] already running"
-    return 0
-  fi
-
-  if launchctl print "gui/\${uid}/\${label}" >/dev/null 2>&1; then
-    launchctl kickstart -k "gui/\${uid}/\${label}" >/dev/null 2>&1 || true
-  elif [[ -f "$plist" ]]; then
-    launchctl bootstrap "gui/\${uid}" "$plist" >/dev/null 2>&1 || true
-    launchctl kickstart -k "gui/\${uid}/\${label}" >/dev/null 2>&1 || true
-  elif [[ -x "\${HOME}/.local/bin/cli-proxy-api" ]]; then
-    mkdir -p "\${HOME}/.cli-proxy-api"
-    nohup "\${HOME}/.local/bin/cli-proxy-api" --config "\${HOME}/.cli-proxy-api/config.yaml" >>"\${log_file}" 2>&1 &
-  else
-    echo "[proxy][FAIL] cli-proxy-api binary not found"
-    return 1
-  fi
-
-  local i
-  for i in {1..20}; do
-    if _claude_proxy_healthcheck; then
-      echo "[proxy][SUCCESS] started"
-      return 0
-    fi
-    sleep 0.25
-  done
-
-  echo "[proxy][FAIL] failed to start (check \${log_file})"
-  return 1
-}
-
-claude() {
-  _claude_ensure_proxy || true
-
-  local claude_bin
-  claude_bin="$(whence -p claude 2>/dev/null || true)"
-  if [[ -z "\${claude_bin}" && -x "\${HOME}/.local/bin/claude" ]]; then
-    claude_bin="\${HOME}/.local/bin/claude"
-  fi
-  if [[ -z "\${claude_bin}" ]]; then
-    echo "[claude][FAIL] claude binary not found"
-    return 127
-  fi
-
-  "\${claude_bin}" --dangerously-skip-permissions "$@"
-}
-
-alias claude-p='claude'
-# <<< codex-cli-proxy auto-start <<<
-`.trimStart();
-}
-
-function removeZshrcBlock(s) {
-  const start = "# >>> codex-cli-proxy auto-start >>>";
-  const end = "# <<< codex-cli-proxy auto-start <<<";
-  while (true) {
-    const i = s.indexOf(start);
-    if (i === -1) break;
-    const j = s.indexOf(end, i);
-    if (j === -1) break;
-    s = s.slice(0, i) + s.slice(j + end.length);
-  }
-
-  // Remove simple aliases if present.
-  s = s.split("\n").filter((line) => {
-    if (line.startsWith("alias claude=")) return false;
-    if (line.startsWith("alias claude-p=")) return false;
-    return true;
-  }).join("\n");
-
-  return s.replace(/\n{3,}/g, "\n\n");
 }
 
 function proxyConfigYaml({ port }) {
@@ -490,7 +434,8 @@ function updateClaudeSettings({ claudeSettingsPath, port, model }) {
 
   json.model = model;
   json.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
-  json.env.ANTHROPIC_AUTH_TOKEN = "sk-ant-proxy-local";
+  // Placeholder token. Avoid secret-like prefixes (e.g., "sk-") to prevent false-positive secret scans.
+  json.env.ANTHROPIC_AUTH_TOKEN = "proxy-local";
   json.env.ANTHROPIC_MODEL = model;
   json.env.ANTHROPIC_SMALL_FAST_MODEL = model;
   json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
@@ -527,19 +472,6 @@ function cleanupClaudeSettings({ claudeSettingsPath, model }) {
   }
 
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
-}
-
-function updateZshrc({ zshrcPath, port }) {
-  ensureDir(path.dirname(zshrcPath));
-  const mode = exists(zshrcPath) ? (fs.statSync(zshrcPath).mode & 0o777) : 0o600;
-  if (!exists(zshrcPath)) writeFileAtomic(zshrcPath, "", mode);
-
-  backupFile(zshrcPath);
-
-  const prev = readText(zshrcPath);
-  const cleaned = removeZshrcBlock(prev);
-  const next = `${cleaned.trimEnd()}\n${zshrcBlock({ port })}\n`;
-  writeFileAtomic(zshrcPath, next, mode);
 }
 
 function getUsername() {
@@ -579,16 +511,6 @@ async function waitForHealthy(port, msTotal = 8000) {
   return false;
 }
 
-function promptYesNo(question) {
-  if (!process.stdin.isTTY) return false;
-  const r = spawnSync("/bin/bash", ["-lc", `read -r -p ${JSON.stringify(question)} ans; echo "$ans"`], {
-    encoding: "utf8",
-    stdio: ["inherit", "pipe", "inherit"],
-  });
-  const ans = String(r.stdout || "").trim().toLowerCase();
-  return ans === "y" || ans === "yes";
-}
-
 async function installFlow(opts) {
   if (process.platform !== "darwin") {
     fail("macOS only (LaunchAgents-based install).");
@@ -606,7 +528,9 @@ async function installFlow(opts) {
   const proxyLog = path.join(proxyDir, "cli-proxy-api.log");
   const tokenSyncLog = path.join(proxyDir, "token-sync.log");
   const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
-  const zshrcPath = path.join(homeDir, ".zshrc");
+
+  const port = await resolveProxyPort({ configFile });
+  const model = DEFAULT_MODEL;
 
   const labelProxy = `com.${username}.cli-proxy-api`;
   const labelSync = `com.${username}.cli-proxy-api-token-sync`;
@@ -618,16 +542,6 @@ async function installFlow(opts) {
     fail(`missing ${codexAuth} (Codex CLI login required)`);
   }
 
-  if (!opts.yes) {
-    log("This will make the following changes:");
-    log(`- Install CLIProxyAPI: ${proxyBin}`);
-    log(`- LaunchAgents: ${plistProxy}, ${plistSync}`);
-    log(`- Update Claude Code settings: ${claudeSettingsPath}`);
-    log(`- Update zshrc: ${zshrcPath}`);
-    const ok = promptYesNo("Continue? (y/N) ");
-    if (!ok) fail("cancelled", 2);
-  }
-
   ensureDir(proxyDir);
   ensureDir(authDir);
   ensureDir(path.dirname(proxyBin));
@@ -636,7 +550,7 @@ async function installFlow(opts) {
   await installCliProxyApiBinary({ proxyBin });
 
   log("Writing config + token sync script...");
-  writeFileAtomic(configFile, proxyConfigYaml({ port: opts.port }), 0o644);
+  writeFileAtomic(configFile, proxyConfigYaml({ port }), 0o644);
   writeFileAtomic(syncScriptPath, tokenSyncScript(), 0o755);
 
   log("Syncing token once...");
@@ -654,34 +568,22 @@ async function installFlow(opts) {
   launchctlKickstart(uid, labelSync);
   launchctlKickstart(uid, labelProxy);
 
-  const healthy = await waitForHealthy(opts.port, 10000);
+  const healthy = await waitForHealthy(port, 10000);
   if (!healthy) fail(`proxy did not become healthy (check ${proxyLog})`);
 
-  if (!opts.noClaudeSettings) {
-    log("Updating Claude Code settings...");
-    updateClaudeSettings({ claudeSettingsPath, port: opts.port, model: opts.model });
-  } else {
-    warn("--no-claude-settings set; skipping ~/.claude/settings.json update");
-  }
-
-  if (!opts.noZshrc) {
-    log("Updating zshrc wrapper...");
-    updateZshrc({ zshrcPath, port: opts.port });
-  } else {
-    warn("--no-zshrc set; skipping ~/.zshrc update");
-  }
+  log("Updating Claude Code settings...");
+  updateClaudeSettings({ claudeSettingsPath, port, model });
 
   log("Verifying reasoning.effort=xhigh ...");
-  const ok = await verifyReasoningEffort(opts.port, opts.model);
+  const ok = await verifyReasoningEffort(port, model);
   if (!ok) fail("expected reasoning.effort=xhigh but verification failed");
 
   log("");
   log("All done.");
-  log(`- Proxy: http://127.0.0.1:${opts.port}`);
+  log(`- Proxy: http://127.0.0.1:${port}`);
   log(`- Config: ${configFile}`);
   log(`- Claude settings: ${claudeSettingsPath}`);
-  log(`- zshrc wrapper: ${zshrcPath}`);
-  log(`- Next: run 'source ~/.zshrc' then 'claude'`);
+  log("- Next: run 'claude'");
 }
 
 async function startFlow(opts) {
@@ -689,6 +591,8 @@ async function startFlow(opts) {
   const homeDir = os.homedir();
   const username = getUsername();
   const uid = getUid();
+  const configFile = path.join(homeDir, ".cli-proxy-api", "config.yaml");
+  const port = readPortFromProxyConfig(configFile) ?? DEFAULT_PORT;
   const labelProxy = `com.${username}.cli-proxy-api`;
   const plistProxy = path.join(homeDir, "Library", "LaunchAgents", `${labelProxy}.plist`);
   const labelSync = `com.${username}.cli-proxy-api-token-sync`;
@@ -702,7 +606,7 @@ async function startFlow(opts) {
   launchctlBootstrap(uid, plistProxy);
   launchctlKickstart(uid, labelProxy);
 
-  const healthy = await waitForHealthy(opts.port, 10000);
+  const healthy = await waitForHealthy(port, 10000);
   if (!healthy) fail("proxy did not become healthy");
   log("proxy started");
 }
@@ -719,8 +623,11 @@ async function stopFlow() {
 }
 
 async function statusFlow(opts) {
-  const portOk = await proxyHealthcheck(opts.port);
-  log(`healthcheck: ${portOk ? "OK" : "NOT RUNNING"} (http://127.0.0.1:${opts.port}/v1/models)`);
+  const homeDir = os.homedir();
+  const configFile = path.join(homeDir, ".cli-proxy-api", "config.yaml");
+  const port = readPortFromProxyConfig(configFile) ?? DEFAULT_PORT;
+  const portOk = await proxyHealthcheck(port);
+  log(`healthcheck: ${portOk ? "OK" : "NOT RUNNING"} (http://127.0.0.1:${port}/v1/models)`);
   if (process.platform === "darwin") {
     const username = getUsername();
     const uid = getUid();
@@ -740,18 +647,9 @@ async function uninstallFlow(opts) {
   const labelSync = `com.${username}.cli-proxy-api-token-sync`;
   const plistProxy = path.join(homeDir, "Library", "LaunchAgents", `${labelProxy}.plist`);
   const plistSync = path.join(homeDir, "Library", "LaunchAgents", `${labelSync}.plist`);
-  const zshrcPath = path.join(homeDir, ".zshrc");
   const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
   const proxyDir = path.join(homeDir, ".cli-proxy-api");
   const proxyBin = path.join(homeDir, ".local", "bin", "cli-proxy-api");
-
-  if (!opts.yes) {
-    const q = opts.command === "purge"
-      ? "Purge: remove LaunchAgents + ~/.zshrc block + proxy files + clean ~/.claude/settings.json? (y/N) "
-      : "Remove LaunchAgents + ~/.zshrc block? (y/N) ";
-    const ok = promptYesNo(q);
-    if (!ok) fail("cancelled", 2);
-  }
 
   launchctlBootout(uid, labelProxy);
   launchctlBootout(uid, labelSync);
@@ -759,18 +657,10 @@ async function uninstallFlow(opts) {
   if (exists(plistProxy)) fs.rmSync(plistProxy, { force: true });
   if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
 
-  if (!opts.noZshrc && exists(zshrcPath)) {
-    const mode = fs.statSync(zshrcPath).mode & 0o777;
-    backupFile(zshrcPath);
-    const next = removeZshrcBlock(readText(zshrcPath));
-    writeFileAtomic(zshrcPath, `${next.trimEnd()}\n`, mode);
-  }
+  // Always restore Claude Code settings so "claude" doesn't keep pointing at a removed proxy.
+  cleanupClaudeSettings({ claudeSettingsPath, model: DEFAULT_MODEL });
 
   if (opts.command === "purge") {
-    if (!opts.noClaudeSettings) {
-      cleanupClaudeSettings({ claudeSettingsPath, model: opts.model });
-    }
-
     // Remove proxy installation files (best-effort).
     if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
     if (exists(proxyBin)) fs.rmSync(proxyBin, { force: true });

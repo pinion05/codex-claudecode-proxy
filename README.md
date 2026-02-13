@@ -1,134 +1,63 @@
 # codex-claudecode-proxy
 
-An `npx` installer that sets up a local proxy (CLIProxyAPI) so Claude Code can reuse your existing Codex OAuth token (`~/.codex/auth.json`).
+Claude Code CLI(`claude`)가 **내 Codex 로그인 상태를 재사용**할 수 있도록, 로컬에 필요한 구성(프록시/자동 실행/설정)을 한 번에 잡아주는 `npx` 설치 도구입니다.
 
-## TL;DR (One-Liner)
-
-If this package is published on npm:
+## 설치 (한 줄)
 
 ```bash
-npx -y codex-claudecode-proxy@latest --yes
+npx -y codex-claudecode-proxy@latest
 ```
 
-If you are running directly from GitHub (before npm publish):
+## 사용
+
+설치가 끝나면:
 
 ```bash
-npx -y github:pinion05/codex-claudecode-proxy --yes
-```
-
-Then:
-
-```bash
-source ~/.zshrc
 claude
 ```
 
-## Requirements
+## 요구사항
 
-- macOS (uses LaunchAgents)
-- Claude Code CLI (`claude`) installed
-- Codex CLI logged in (must have `~/.codex/auth.json`)
+- macOS 전용
+- Claude Code CLI(`claude`)가 설치되어 있어야 함
+- Codex CLI에 로그인되어 있어야 함
 
-## What It Does
-
-- Installs `CLIProxyAPI` binary to `~/.local/bin/cli-proxy-api`
-- Writes `~/.cli-proxy-api/config.yaml`
-  - Forces `reasoning.effort=xhigh` for `protocol=codex` and `model=gpt-*`
-- Syncs token:
-  - Source: `~/.codex/auth.json`
-  - Target: `~/.cli-proxy-api/auths/codex-from-codex-cli.json`
-- Registers LaunchAgents (auto start/restart):
-  - `com.$USER.cli-proxy-api`
-  - `com.$USER.cli-proxy-api-token-sync` (syncs on auth.json changes)
-- Updates Claude Code settings in `~/.claude/settings.json`:
-  - `ANTHROPIC_BASE_URL=http://127.0.0.1:8317`
-  - Sets all model keys to `gpt-5.3-codex`
-- Adds a `claude()` wrapper in `~/.zshrc`:
-  - On `claude`, starts proxy (prints `[proxy][CANCEL]` if already running)
-
-## Common Workflows
-
-- Install / re-run install (idempotent):
-
-  ```bash
-  npx -y codex-claudecode-proxy@latest --yes
-  ```
-
-- Check proxy status:
-
-  ```bash
-  npx -y codex-claudecode-proxy@latest status
-  ```
-
-- Start / stop proxy manually:
-
-  ```bash
-  npx -y codex-claudecode-proxy@latest start
-  npx -y codex-claudecode-proxy@latest stop
-  ```
-
-- Uninstall vs purge:
-  - `uninstall`: removes LaunchAgents + removes `~/.zshrc` wrapper block (keeps proxy files).
-  - `purge`: uninstall + deletes `~/.cli-proxy-api` + deletes `~/.local/bin/cli-proxy-api` + cleans proxy keys from `~/.claude/settings.json`.
-
-## Commands
+## 자주 쓰는 명령어
 
 ```bash
-npx -y codex-claudecode-proxy@latest          # install (interactive)
-npx -y codex-claudecode-proxy@latest --yes    # install (non-interactive)
+# 설치(재실행해도 안전하게 동작)
+npx -y codex-claudecode-proxy@latest
+
+# 상태 확인
 npx -y codex-claudecode-proxy@latest status
+
+# 수동 시작/중지
 npx -y codex-claudecode-proxy@latest start
 npx -y codex-claudecode-proxy@latest stop
+
+# 제거(원복): 백그라운드 실행을 끄고 Claude Code 설정을 원래대로 되돌림
 npx -y codex-claudecode-proxy@latest uninstall
-npx -y codex-claudecode-proxy@latest purge --yes
+
+# 완전 삭제: 제거 + 설치된 파일까지 모두 삭제
+npx -y codex-claudecode-proxy@latest purge
 ```
 
-## Options
+## 동작 방식 (사용자 관점)
 
-- `--yes` / `-y`: non-interactive mode (recommended for one-liner installs)
-- `--port <n>`: proxy port (default: `8317`)
-- `--model <name>`: model to set in Claude Code settings (default: `gpt-5.3-codex`)
-- `--no-zshrc`: do not touch `~/.zshrc`
-- `--no-claude-settings`: do not touch `~/.claude/settings.json`
+- **비대화형**으로만 동작합니다(질문/프롬프트 없음).
+- 설정 플래그로 이것저것 조정하는 방식 대신, 기본값으로 바로 쓸 수 있게 구성되어 있습니다.
 
-Example:
+## 무결성/안전
 
-```bash
-npx -y codex-claudecode-proxy@latest --yes --port 8317 --model gpt-5.3-codex
-```
+- `~/.zshrc`를 수정하지 않습니다.
+- Claude Code 설정은 자동으로 구성되며, 변경 전 백업을 남깁니다.
+- `uninstall`을 실행하면 “프록시를 쓰도록 바꿔둔 Claude Code 설정”을 정리해 원복합니다.
 
-## Files Created / Modified
+## 문제 해결
 
-- Proxy binary:
-  - `~/.local/bin/cli-proxy-api`
-- Proxy config:
-  - `~/.cli-proxy-api/config.yaml`
-- Token mirror for proxy:
-  - `~/.cli-proxy-api/auths/codex-from-codex-cli.json`
-- Logs:
-  - `~/.cli-proxy-api/cli-proxy-api.log`
-  - `~/.cli-proxy-api/token-sync.log`
-- LaunchAgents:
-  - `~/Library/LaunchAgents/com.$USER.cli-proxy-api.plist`
-  - `~/Library/LaunchAgents/com.$USER.cli-proxy-api-token-sync.plist`
-- Claude Code settings:
-  - `~/.claude/settings.json` (backed up with `settings.json.backup.<timestamp>`)
-- Zsh wrapper:
-  - `~/.zshrc` (backed up with `.zshrc.backup.<timestamp>`)
+- 설치 중 “로그인이 필요”하다는 메시지가 나오면: Codex CLI에서 로그인 후 다시 실행하세요.
+- `claude`가 실행되지 않으면: Claude Code CLI가 설치되어 있는지 확인한 다음 다시 설치를 실행하세요.
 
-## Troubleshooting
+## 라이선스
 
-- `missing ~/.codex/auth.json`:
-  - You must login via Codex CLI first (so the OAuth token exists).
-
-- Proxy does not become healthy:
-  - Check: `~/.cli-proxy-api/cli-proxy-api.log`
-  - Also confirm the port is free (default `8317`). If not, use `--port`.
-
-- `claude` command not found:
-  - Install Claude Code CLI first, then re-run install.
-
-## Security Notes
-
-- This tool reads `~/.codex/auth.json` and writes a local mirror under `~/.cli-proxy-api/auths/` for CLIProxyAPI to use.
-- The mirror file is written with `chmod 600`.
+MIT
