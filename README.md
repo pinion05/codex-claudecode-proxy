@@ -5,7 +5,7 @@ openai oauth api 를 claude 호환 api 로 번역해주는 로컬 프록시 설�
 ## 그저 한줄.
 
 ```bash
-npx -y codex-claudecode-proxy@latest
+npx -y codex-claudecode-proxy
 ```
 
 ## 요구사항
