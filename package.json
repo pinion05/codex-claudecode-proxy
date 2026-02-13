@@ -1,6 +1,6 @@
 {
   "name": "codex-claudecode-proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "npx installer for running CLIProxyAPI as local proxy for Claude Code using Codex OAuth token",
   "license": "MIT",
   "repository": {
