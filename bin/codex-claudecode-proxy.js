@@ -288,6 +288,7 @@ payload:
           protocol: "codex"
       params:
         "reasoning.effort": "xhigh"
+        "reasoning.summary": "auto"
 `;
 }
 
