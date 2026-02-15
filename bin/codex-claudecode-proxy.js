@@ -9,10 +9,11 @@ import { spawnSync } from "node:child_process";
 
 const DEFAULT_PORT = 8317;
 const DEFAULT_MODEL = "gpt-5.3-codex";
-const DEFAULT_HAIKU_MODEL = "gpt-5.3-codex-spark";
+const LOGICAL_OPUS_MODEL = "codex-opus";
+const LOGICAL_SONNET_MODEL = "codex-sonnet";
+const LOGICAL_HAIKU_MODEL = "codex-haiku";
 // CLIProxyAPI releases frequently add new Codex model definitions. If the binary is
 // too old, the proxy can fail requests with "unknown provider for model ...".
-// gpt-5.3-codex-spark support landed in CLIProxyAPI v6.8.15.
 const MIN_CLI_PROXY_API_VERSION = "6.8.15";
 
 function nowTs() {
@@ -283,7 +284,7 @@ async function proxyHealthcheck(port) {
   }
 }
 
-async function verifyReasoningEffort(port, model) {
+async function verifyReasoningEffort(port, model, expectedEffort) {
   for (let i = 0; i < 6; i += 1) {
     try {
       const ctrl = new AbortController();
@@ -297,7 +298,7 @@ async function verifyReasoningEffort(port, model) {
       clearTimeout(t);
       const json = await res.json();
       const effort = json?.reasoning?.effort;
-      if (effort === "xhigh") return true;
+      if (effort === expectedEffort) return true;
       await sleep(1000);
     } catch {
       await sleep(1000);
@@ -320,11 +321,37 @@ streaming:
 
 payload:
   override:
+    # Claude Code exposes Opus/Sonnet/Haiku tiers. Instead of mapping tiers 1:1
+    # to separate model IDs, we map all tiers to a single upstream model and
+    # control behavior via reasoning.effort.
+    - models:
+        - name: "${LOGICAL_OPUS_MODEL}"
+          protocol: "codex"
+      params:
+        "model": "${DEFAULT_MODEL}"
+        "reasoning.effort": "xhigh"
+        "reasoning.summary": "auto"
+    - models:
+        - name: "${LOGICAL_SONNET_MODEL}"
+          protocol: "codex"
+      params:
+        "model": "${DEFAULT_MODEL}"
+        "reasoning.effort": "high"
+        "reasoning.summary": "auto"
+    - models:
+        - name: "${LOGICAL_HAIKU_MODEL}"
+          protocol: "codex"
+      params:
+        "model": "${DEFAULT_MODEL}"
+        "reasoning.effort": "medium"
+        "reasoning.summary": "auto"
+
+    # Safety net: if Claude Code is configured to send a real Codex model name,
+    # ensure we still use the Codex protocol and request a reasoning summary.
     - models:
         - name: "gpt-*"
           protocol: "codex"
       params:
-        "reasoning.effort": "xhigh"
         "reasoning.summary": "auto"
 `;
 }
@@ -479,7 +506,7 @@ async function installCliProxyApiBinary({ proxyBin }) {
   log(`Installed: ${proxyBin}`);
 }
 
-function updateClaudeSettings({ claudeSettingsPath, port, model }) {
+function updateClaudeSettings({ claudeSettingsPath, port }) {
   ensureDir(path.dirname(claudeSettingsPath));
   if (!exists(claudeSettingsPath)) {
     writeFileAtomic(claudeSettingsPath, "{}\n", 0o600);
@@ -497,15 +524,15 @@ function updateClaudeSettings({ claudeSettingsPath, port, model }) {
   if (!json || typeof json !== "object") json = {};
   if (!json.env || typeof json.env !== "object") json.env = {};
 
-  json.model = model;
   json.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
   // Placeholder token. Avoid secret-like prefixes (e.g., "sk-") to prevent false-positive secret scans.
   json.env.ANTHROPIC_AUTH_TOKEN = "proxy-local";
-  json.env.ANTHROPIC_MODEL = model;
-  json.env.ANTHROPIC_SMALL_FAST_MODEL = model;
-  json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
-  json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
-  json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = DEFAULT_HAIKU_MODEL;
+  // Avoid global model overrides. Let Claude Code tiers select models.
+  delete json.env.ANTHROPIC_MODEL;
+  delete json.env.ANTHROPIC_SMALL_FAST_MODEL;
+  json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = LOGICAL_OPUS_MODEL;
+  json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = LOGICAL_SONNET_MODEL;
+  json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = LOGICAL_HAIKU_MODEL;
 
   // Tool flows can be slow with large tool schemas. Keep timeouts generous.
   // https://docs.claude.com/en/docs/claude-code/settings
@@ -520,7 +547,7 @@ function updateClaudeSettings({ claudeSettingsPath, port, model }) {
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
 }
 
-function cleanupClaudeSettings({ claudeSettingsPath, model }) {
+function cleanupClaudeSettings({ claudeSettingsPath }) {
   if (!exists(claudeSettingsPath)) return;
 
   backupFile(claudeSettingsPath);
@@ -533,8 +560,6 @@ function cleanupClaudeSettings({ claudeSettingsPath, model }) {
   }
 
   if (!json || typeof json !== "object") return;
-
-  if (json.model === model) delete json.model;
 
   if (json.env && typeof json.env === "object") {
     delete json.env.ANTHROPIC_BASE_URL;
@@ -560,7 +585,7 @@ function cleanExistingInstall({ uid, labelProxy, labelSync, plistProxy, plistSyn
   if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
   if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
   // Best-effort cleanup so Claude doesn't keep pointing at a removed proxy.
-  cleanupClaudeSettings({ claudeSettingsPath, model: DEFAULT_MODEL });
+  cleanupClaudeSettings({ claudeSettingsPath });
   return true;
 }
 
@@ -626,7 +651,6 @@ async function installFlow(opts) {
 
   // Compute port before cleaning, so re-running install keeps existing config-based port.
   const port = await resolveProxyPort({ configFile });
-  const model = DEFAULT_MODEL;
 
   const codexAuth = path.join(homeDir, ".codex", "auth.json");
   if (!exists(codexAuth)) {
@@ -673,11 +697,15 @@ async function installFlow(opts) {
   if (!healthy) fail(`proxy did not become healthy (check ${proxyLog})`);
 
   log("Updating Claude Code settings...");
-  updateClaudeSettings({ claudeSettingsPath, port, model });
+  updateClaudeSettings({ claudeSettingsPath, port });
 
-  log("Verifying reasoning.effort=xhigh ...");
-  const ok = await verifyReasoningEffort(port, model);
-  if (!ok) fail("expected reasoning.effort=xhigh but verification failed");
+  log("Verifying tier reasoning.effort mapping (opus/sonnet/haiku) ...");
+  const okOpus = await verifyReasoningEffort(port, LOGICAL_OPUS_MODEL, "xhigh");
+  if (!okOpus) fail("expected opus reasoning.effort=xhigh but verification failed");
+  const okSonnet = await verifyReasoningEffort(port, LOGICAL_SONNET_MODEL, "high");
+  if (!okSonnet) fail("expected sonnet reasoning.effort=high but verification failed");
+  const okHaiku = await verifyReasoningEffort(port, LOGICAL_HAIKU_MODEL, "medium");
+  if (!okHaiku) fail("expected haiku reasoning.effort=medium but verification failed");
 
   log("");
   log("All done.");
@@ -759,7 +787,7 @@ async function uninstallFlow(opts) {
   if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
 
   // Always restore Claude Code settings so "claude" doesn't keep pointing at a removed proxy.
-  cleanupClaudeSettings({ claudeSettingsPath, model: DEFAULT_MODEL });
+  cleanupClaudeSettings({ claudeSettingsPath });
 
   if (opts.command === "purge") {
     // Remove proxy installation files (best-effort).
