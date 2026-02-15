@@ -9,6 +9,11 @@ import { spawnSync } from "node:child_process";
 
 const DEFAULT_PORT = 8317;
 const DEFAULT_MODEL = "gpt-5.3-codex";
+const DEFAULT_HAIKU_MODEL = "gpt-5.3-codex-spark";
+// CLIProxyAPI releases frequently add new Codex model definitions. If the binary is
+// too old, the proxy can fail requests with "unknown provider for model ...".
+// gpt-5.3-codex-spark support landed in CLIProxyAPI v6.8.15.
+const MIN_CLI_PROXY_API_VERSION = "6.8.15";
 
 function nowTs() {
   return Date.now().toString();
@@ -131,6 +136,30 @@ function run(cmd, args, opts = {}) {
     fail(msg);
   }
   return r;
+}
+
+function parseSemver(s) {
+  const m = String(s || "").trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return null;
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
+}
+
+function compareSemver(a, b) {
+  const aa = parseSemver(a);
+  const bb = parseSemver(b);
+  if (!aa || !bb) return null;
+  if (aa.major !== bb.major) return aa.major - bb.major;
+  if (aa.minor !== bb.minor) return aa.minor - bb.minor;
+  return aa.patch - bb.patch;
+}
+
+function getCliProxyApiVersion(proxyBin) {
+  if (!exists(proxyBin)) return null;
+  // CLIProxyAPI prints its version in help/usage text.
+  const r = run(proxyBin, ["--help"], { allowFail: true });
+  const txt = `${r.stdout || ""}\n${r.stderr || ""}`;
+  const m = txt.match(/CLIProxyAPI Version:\s*([0-9]+\.[0-9]+\.[0-9]+)/);
+  return m ? m[1] : null;
 }
 
 async function fetchJson(url) {
@@ -380,9 +409,25 @@ function buildPlistProxy({ labelProxy, proxyBin, configFile, homeDir, proxyLog }
 }
 
 async function installCliProxyApiBinary({ proxyBin }) {
-  if (exists(proxyBin)) {
-    log(`CLIProxyAPI already installed: ${proxyBin}`);
-    return;
+  const forceUpdate = process.env.CODEX_CLAUDECODE_PROXY_FORCE_CLI_PROXY_API_UPDATE === "1";
+  const installedVersion = getCliProxyApiVersion(proxyBin);
+  if (exists(proxyBin) && !forceUpdate) {
+    // If we can't determine the version, don't disrupt a potentially customized setup.
+    // Users can force an update by setting CODEX_CLAUDECODE_PROXY_FORCE_CLI_PROXY_API_UPDATE=1.
+    if (!installedVersion) {
+      log(`CLIProxyAPI already installed: ${proxyBin}`);
+      return;
+    }
+
+    const cmp = compareSemver(installedVersion, MIN_CLI_PROXY_API_VERSION);
+    if (cmp == null || cmp >= 0) {
+      log(`CLIProxyAPI already installed: ${proxyBin} (v${installedVersion})`);
+      return;
+    }
+
+    warn(`CLIProxyAPI v${installedVersion} is older than v${MIN_CLI_PROXY_API_VERSION}; updating...`);
+  } else if (exists(proxyBin) && forceUpdate) {
+    warn(`Forcing CLIProxyAPI update (installed=${installedVersion ? `v${installedVersion}` : "unknown"})...`);
   }
 
   const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : null;
@@ -408,8 +453,10 @@ async function installCliProxyApiBinary({ proxyBin }) {
   const found = findFileRecursive(tmpDir, ["cli-proxy-api", "CLIProxyAPI"]);
   if (!found) fail("failed to locate extracted binary");
 
-  fs.copyFileSync(found, proxyBin);
-  fs.chmodSync(proxyBin, 0o755);
+  const tmpOut = `${proxyBin}.tmp.${process.pid}.${nowTs()}`;
+  fs.copyFileSync(found, tmpOut);
+  fs.chmodSync(tmpOut, 0o755);
+  fs.renameSync(tmpOut, proxyBin);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 
   log(`Installed: ${proxyBin}`);
@@ -441,7 +488,7 @@ function updateClaudeSettings({ claudeSettingsPath, port, model }) {
   json.env.ANTHROPIC_SMALL_FAST_MODEL = model;
   json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
   json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
-  json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+  json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = DEFAULT_HAIKU_MODEL;
 
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
 }
@@ -473,6 +520,21 @@ function cleanupClaudeSettings({ claudeSettingsPath, model }) {
   }
 
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
+}
+
+function cleanExistingInstall({ uid, labelProxy, labelSync, plistProxy, plistSync, proxyDir, claudeSettingsPath }) {
+  const hasInstallArtifacts = exists(proxyDir) || exists(plistProxy) || exists(plistSync);
+  if (!hasInstallArtifacts) return false;
+
+  log("Existing install detected; cleaning up before reinstall...");
+  launchctlBootout(uid, labelProxy);
+  launchctlBootout(uid, labelSync);
+  if (exists(plistProxy)) fs.rmSync(plistProxy, { force: true });
+  if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
+  if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
+  // Best-effort cleanup so Claude doesn't keep pointing at a removed proxy.
+  cleanupClaudeSettings({ claudeSettingsPath, model: DEFAULT_MODEL });
+  return true;
 }
 
 function getUsername() {
@@ -530,18 +592,29 @@ async function installFlow(opts) {
   const tokenSyncLog = path.join(proxyDir, "token-sync.log");
   const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
 
-  const port = await resolveProxyPort({ configFile });
-  const model = DEFAULT_MODEL;
-
   const labelProxy = `com.${username}.cli-proxy-api`;
   const labelSync = `com.${username}.cli-proxy-api-token-sync`;
   const plistProxy = path.join(homeDir, "Library", "LaunchAgents", `${labelProxy}.plist`);
   const plistSync = path.join(homeDir, "Library", "LaunchAgents", `${labelSync}.plist`);
 
+  // Compute port before cleaning, so re-running install keeps existing config-based port.
+  const port = await resolveProxyPort({ configFile });
+  const model = DEFAULT_MODEL;
+
   const codexAuth = path.join(homeDir, ".codex", "auth.json");
   if (!exists(codexAuth)) {
     fail(`missing ${codexAuth} (Codex CLI login required)`);
   }
+
+  cleanExistingInstall({
+    uid,
+    labelProxy,
+    labelSync,
+    plistProxy,
+    plistSync,
+    proxyDir,
+    claudeSettingsPath,
+  });
 
   ensureDir(proxyDir);
   ensureDir(authDir);
