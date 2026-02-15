@@ -6,6 +6,9 @@ import path from "node:path";
 import http from "node:http";
 import { spawnSync, spawn } from "node:child_process";
 
+const EXPECTED_MODEL = "gpt-5.3-codex";
+const EXPECTED_HAIKU_MODEL = "gpt-5.3-codex-spark";
+
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -150,6 +153,11 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
     `http://127.0.0.1:${port}`,
     "expected ANTHROPIC_BASE_URL to point at local proxy port",
   );
+  assert.equal(settings?.env?.ANTHROPIC_MODEL, EXPECTED_MODEL);
+  assert.equal(settings?.env?.ANTHROPIC_SMALL_FAST_MODEL, EXPECTED_MODEL);
+  assert.equal(settings?.env?.ANTHROPIC_DEFAULT_SONNET_MODEL, EXPECTED_MODEL);
+  assert.equal(settings?.env?.ANTHROPIC_DEFAULT_OPUS_MODEL, EXPECTED_MODEL);
+  assert.equal(settings?.env?.ANTHROPIC_DEFAULT_HAIKU_MODEL, EXPECTED_HAIKU_MODEL);
 
   // Config should keep the configured port.
   const cfg = fs.readFileSync(path.join(home, ".cli-proxy-api", "config.yaml"), "utf8");
