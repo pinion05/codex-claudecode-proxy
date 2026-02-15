@@ -6,9 +6,12 @@ import path from "node:path";
 import http from "node:http";
 import { spawnSync, spawn } from "node:child_process";
 
+// Tier selectors (what Claude Code will send as `model` when you pick Opus/Sonnet/Haiku).
+// The proxy config rewrites Sonnet/Haiku to call gpt-5.3-codex upstream, but tests only
+// validate that tier selection changes reasoning.effort.
 const EXPECTED_OPUS_MODEL = "gpt-5.3-codex";
-const EXPECTED_SONNET_MODEL = "gpt-5.2-codex";
-const EXPECTED_HAIKU_MODEL = "gpt-5.1-codex-mini";
+const EXPECTED_SONNET_MODEL = "gpt-5.3-codex-spark";
+const EXPECTED_HAIKU_MODEL = "gpt-5-codex-mini";
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -191,6 +194,7 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"xhigh\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"high\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"medium\\\"`, "m"));
+  assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"${EXPECTED_OPUS_MODEL}\\\"`, "m"), "expected upstream model rewrite to opus base model");
 });
 
 test("install cleans existing install artifacts on re-run", async (t) => {
