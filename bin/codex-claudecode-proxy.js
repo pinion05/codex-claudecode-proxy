@@ -522,6 +522,21 @@ function cleanupClaudeSettings({ claudeSettingsPath, model }) {
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
 }
 
+function cleanExistingInstall({ uid, labelProxy, labelSync, plistProxy, plistSync, proxyDir, claudeSettingsPath }) {
+  const hasInstallArtifacts = exists(proxyDir) || exists(plistProxy) || exists(plistSync);
+  if (!hasInstallArtifacts) return false;
+
+  log("Existing install detected; cleaning up before reinstall...");
+  launchctlBootout(uid, labelProxy);
+  launchctlBootout(uid, labelSync);
+  if (exists(plistProxy)) fs.rmSync(plistProxy, { force: true });
+  if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
+  if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
+  // Best-effort cleanup so Claude doesn't keep pointing at a removed proxy.
+  cleanupClaudeSettings({ claudeSettingsPath, model: DEFAULT_MODEL });
+  return true;
+}
+
 function getUsername() {
   // Prefer $USER for consistency with LaunchAgent labels.
   if (process.env.USER && process.env.USER.trim()) return process.env.USER.trim();
@@ -577,18 +592,29 @@ async function installFlow(opts) {
   const tokenSyncLog = path.join(proxyDir, "token-sync.log");
   const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
 
-  const port = await resolveProxyPort({ configFile });
-  const model = DEFAULT_MODEL;
-
   const labelProxy = `com.${username}.cli-proxy-api`;
   const labelSync = `com.${username}.cli-proxy-api-token-sync`;
   const plistProxy = path.join(homeDir, "Library", "LaunchAgents", `${labelProxy}.plist`);
   const plistSync = path.join(homeDir, "Library", "LaunchAgents", `${labelSync}.plist`);
 
+  // Compute port before cleaning, so re-running install keeps existing config-based port.
+  const port = await resolveProxyPort({ configFile });
+  const model = DEFAULT_MODEL;
+
   const codexAuth = path.join(homeDir, ".codex", "auth.json");
   if (!exists(codexAuth)) {
     fail(`missing ${codexAuth} (Codex CLI login required)`);
   }
+
+  cleanExistingInstall({
+    uid,
+    labelProxy,
+    labelSync,
+    plistProxy,
+    plistSync,
+    proxyDir,
+    claudeSettingsPath,
+  });
 
   ensureDir(proxyDir);
   ensureDir(authDir);

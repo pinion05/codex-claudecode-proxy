@@ -164,6 +164,86 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.match(cfg, new RegExp(`^port:\\s*${port}\\s*$`, "m"), "expected config.yaml to keep selected port");
 });
 
+test("install cleans existing install artifacts on re-run", async (t) => {
+  const home = mkTmpDir("codex-claudecode-proxy-home-");
+  const stubBin = path.join(home, "stub-bin");
+  fs.mkdirSync(stubBin, { recursive: true });
+  writeStubLaunchctl(stubBin);
+
+  // Required by installFlow().
+  writeFile(path.join(home, ".codex", "auth.json"), makeCodexAuthJson(), 0o600);
+
+  // Skip network download of CLIProxyAPI by pre-creating the binary.
+  const proxyBin = path.join(home, ".local", "bin", "cli-proxy-api");
+  writeFile(proxyBin, "#!/usr/bin/env bash\nexit 0\n", 0o755);
+
+  const { server, port } = await startFakeProxyServer();
+  t.after(() => server.close());
+
+  // Force installer to use the already-configured port without requiring flags.
+  writeFile(
+    path.join(home, ".cli-proxy-api", "config.yaml"),
+    `port: ${port}\nauth-dir: \"~/.cli-proxy-api/auths\"\n`,
+    0o644,
+  );
+
+  const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
+
+  const runInstall = async () => await new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [cli, "install"],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USER: "testuser",
+          PATH: `${stubBin}:${process.env.PATH || ""}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
+  });
+
+  const r1 = await runInstall();
+  assert.equal(
+    r1.status,
+    0,
+    `expected exit 0\nstdout:\n${r1.stdout || ""}\nstderr:\n${r1.stderr || ""}`,
+  );
+
+  // Create a sentinel file that should be removed by the next install.
+  const sentinel = path.join(home, ".cli-proxy-api", "sentinel.txt");
+  writeFile(sentinel, "junk\n", 0o644);
+  assert.equal(fs.existsSync(sentinel), true);
+
+  const r2 = await runInstall();
+  assert.equal(
+    r2.status,
+    0,
+    `expected exit 0\nstdout:\n${r2.stdout || ""}\nstderr:\n${r2.stderr || ""}`,
+  );
+  assert.equal(fs.existsSync(sentinel), false, "expected install to remove previous proxyDir contents");
+
+  // Claude settings should be rewritten and still point to the configured port.
+  const settingsPath = path.join(home, ".claude", "settings.json");
+  const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  assert.equal(settings?.env?.ANTHROPIC_BASE_URL, `http://127.0.0.1:${port}`);
+  assert.equal(settings?.env?.ANTHROPIC_MODEL, EXPECTED_MODEL);
+  assert.equal(settings?.env?.ANTHROPIC_DEFAULT_HAIKU_MODEL, EXPECTED_HAIKU_MODEL);
+
+  // Config should still keep the configured port.
+  const cfg = fs.readFileSync(path.join(home, ".cli-proxy-api", "config.yaml"), "utf8");
+  assert.match(cfg, new RegExp(`^port:\\s*${port}\\s*$`, "m"));
+});
+
 test("uninstall succeeds without --yes (non-interactive only)", () => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
