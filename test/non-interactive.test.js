@@ -6,10 +6,9 @@ import path from "node:path";
 import http from "node:http";
 import { spawnSync, spawn } from "node:child_process";
 
-const EXPECTED_BASE_MODEL = "gpt-5.3-codex";
-const EXPECTED_OPUS_MODEL = "codex-opus";
-const EXPECTED_SONNET_MODEL = "codex-sonnet";
-const EXPECTED_HAIKU_MODEL = "codex-haiku";
+const EXPECTED_OPUS_MODEL = "gpt-5.3-codex";
+const EXPECTED_SONNET_MODEL = "gpt-5.2-codex";
+const EXPECTED_HAIKU_MODEL = "gpt-5.1-codex-mini";
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -192,7 +191,6 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"xhigh\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"high\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"medium\\\"`, "m"));
-  assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"${EXPECTED_BASE_MODEL}\\\"`, "m"));
 });
 
 test("install cleans existing install artifacts on re-run", async (t) => {
