@@ -7,11 +7,11 @@ import http from "node:http";
 import { spawnSync, spawn } from "node:child_process";
 
 // Tier selectors (what Claude Code will send as `model` when you pick Opus/Sonnet/Haiku).
-// The proxy config rewrites Sonnet/Haiku to call gpt-5.3-codex upstream, but tests only
-// validate that tier selection changes reasoning.effort.
-const EXPECTED_OPUS_MODEL = "gpt-5.3-codex";
-const EXPECTED_SONNET_MODEL = "gpt-5.3-codex-spark";
-const EXPECTED_HAIKU_MODEL = "gpt-5-codex-mini";
+// Keep UX explicit: effort is encoded in the visible model name, while upstream
+// requests are rewritten to gpt-5.3-codex.
+const EXPECTED_OPUS_MODEL = "gpt-5.3-codex(xhigh)";
+const EXPECTED_SONNET_MODEL = "gpt-5.3-codex(high)";
+const EXPECTED_HAIKU_MODEL = "gpt-5.3-codex(medium)";
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -188,13 +188,13 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   // Config should keep the configured port.
   const cfg = fs.readFileSync(path.join(home, ".cli-proxy-api", "config.yaml"), "utf8");
   assert.match(cfg, new RegExp(`^port:\\s*${port}\\s*$`, "m"), "expected config.yaml to keep selected port");
-  assert.match(cfg, new RegExp(`name:\\s*\"?${EXPECTED_OPUS_MODEL}\"?`, "m"));
-  assert.match(cfg, new RegExp(`name:\\s*\"?${EXPECTED_SONNET_MODEL}\"?`, "m"));
-  assert.match(cfg, new RegExp(`name:\\s*\"?${EXPECTED_HAIKU_MODEL}\"?`, "m"));
+  assert.equal(cfg.includes(`name: "${EXPECTED_OPUS_MODEL}"`), true);
+  assert.equal(cfg.includes(`name: "${EXPECTED_SONNET_MODEL}"`), true);
+  assert.equal(cfg.includes(`name: "${EXPECTED_HAIKU_MODEL}"`), true);
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"xhigh\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"high\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"medium\\\"`, "m"));
-  assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"${EXPECTED_OPUS_MODEL}\\\"`, "m"), "expected upstream model rewrite to opus base model");
+  assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"gpt-5\\.3-codex\\\"`, "m"), "expected upstream model rewrite to gpt-5.3-codex");
 });
 
 test("install cleans existing install artifacts on re-run", async (t) => {

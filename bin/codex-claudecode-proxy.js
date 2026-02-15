@@ -12,8 +12,9 @@ const DEFAULT_MODEL = "gpt-5.3-codex";
 // Tier selector models: Claude Code tiers select these, and CLIProxyAPI config
 // maps them to different reasoning.effort values. Sonnet/Haiku are rewritten to
 // call DEFAULT_MODEL upstream so the actual model stays fixed.
-const DEFAULT_SONNET_MODEL = "gpt-5.3-codex-spark";
-const DEFAULT_HAIKU_MODEL = "gpt-5-codex-mini";
+const DEFAULT_OPUS_MODEL = "gpt-5.3-codex(xhigh)";
+const DEFAULT_SONNET_MODEL = "gpt-5.3-codex(high)";
+const DEFAULT_HAIKU_MODEL = "gpt-5.3-codex(medium)";
 // CLIProxyAPI releases frequently add new Codex model definitions. If the binary is
 // too old, the proxy can fail requests with "unknown provider for model ...".
 const MIN_CLI_PROXY_API_VERSION = "6.8.15";
@@ -326,7 +327,7 @@ payload:
     # Claude Code exposes Opus/Sonnet/Haiku tiers. We keep tier-specific model IDs
     # (so CPA can resolve providers) and control behavior via reasoning.effort.
     - models:
-        - name: "${DEFAULT_MODEL}"
+        - name: "${DEFAULT_OPUS_MODEL}"
           protocol: "codex"
       params:
         "model": "${DEFAULT_MODEL}"
@@ -531,7 +532,7 @@ function updateClaudeSettings({ claudeSettingsPath, port }) {
   // Avoid global model overrides. Let Claude Code tiers select models.
   delete json.env.ANTHROPIC_MODEL;
   delete json.env.ANTHROPIC_SMALL_FAST_MODEL;
-  json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = DEFAULT_MODEL;
+  json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = DEFAULT_OPUS_MODEL;
   json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = DEFAULT_SONNET_MODEL;
   json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = DEFAULT_HAIKU_MODEL;
 
@@ -701,7 +702,7 @@ async function installFlow(opts) {
   updateClaudeSettings({ claudeSettingsPath, port });
 
   log("Verifying tier reasoning.effort mapping (opus/sonnet/haiku) ...");
-  const okOpus = await verifyReasoningEffort(port, DEFAULT_MODEL, "xhigh");
+  const okOpus = await verifyReasoningEffort(port, DEFAULT_OPUS_MODEL, "xhigh");
   if (!okOpus) fail("expected opus reasoning.effort=xhigh but verification failed");
   const okSonnet = await verifyReasoningEffort(port, DEFAULT_SONNET_MODEL, "high");
   if (!okSonnet) fail("expected sonnet reasoning.effort=high but verification failed");
