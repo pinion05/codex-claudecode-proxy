@@ -158,6 +158,12 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.equal(settings?.env?.ANTHROPIC_DEFAULT_SONNET_MODEL, EXPECTED_MODEL);
   assert.equal(settings?.env?.ANTHROPIC_DEFAULT_OPUS_MODEL, EXPECTED_MODEL);
   assert.equal(settings?.env?.ANTHROPIC_DEFAULT_HAIKU_MODEL, EXPECTED_HAIKU_MODEL);
+  assert.equal(settings?.env?.BASH_DEFAULT_TIMEOUT_MS, "120000");
+  assert.equal(settings?.env?.BASH_MAX_TIMEOUT_MS, "600000");
+  assert.equal(settings?.env?.MCP_TIMEOUT, "30000");
+  assert.equal(settings?.env?.MCP_TOOL_TIMEOUT, "600000");
+  assert.equal(settings?.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
+  assert.equal(settings?.env?.API_TIMEOUT_MS, "600000");
 
   // Config should keep the configured port.
   const cfg = fs.readFileSync(path.join(home, ".cli-proxy-api", "config.yaml"), "utf8");

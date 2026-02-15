@@ -310,6 +310,14 @@ function proxyConfigYaml({ port }) {
   return `port: ${port}
 auth-dir: "~/.cli-proxy-api/auths"
 
+# Retry transient upstream failures and keep streaming connections alive.
+# This helps reduce intermittent "context canceled" errors seen in Claude Code tool flows.
+request-retry: 6
+max-retry-interval: 60
+streaming:
+  keepalive-seconds: 15
+  bootstrap-retries: 2
+
 payload:
   override:
     - models:
@@ -319,6 +327,15 @@ payload:
         "reasoning.effort": "xhigh"
         "reasoning.summary": "auto"
 `;
+}
+
+function ensureEnvDefault(env, key, value) {
+  if (!(key in env)) env[key] = value;
+}
+
+function ensureEnvMinInt(env, key, minValue) {
+  const cur = Number.parseInt(String(env[key] ?? ""), 10);
+  if (!Number.isFinite(cur) || cur < minValue) env[key] = String(minValue);
 }
 
 function tokenSyncScript() {
@@ -489,6 +506,16 @@ function updateClaudeSettings({ claudeSettingsPath, port, model }) {
   json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
   json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
   json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = DEFAULT_HAIKU_MODEL;
+
+  // Tool flows can be slow with large tool schemas. Keep timeouts generous.
+  // https://docs.claude.com/en/docs/claude-code/settings
+  ensureEnvMinInt(json.env, "BASH_DEFAULT_TIMEOUT_MS", 120000);
+  ensureEnvMinInt(json.env, "BASH_MAX_TIMEOUT_MS", 600000);
+  ensureEnvMinInt(json.env, "MCP_TIMEOUT", 30000);
+  ensureEnvMinInt(json.env, "MCP_TOOL_TIMEOUT", 600000);
+  ensureEnvDefault(json.env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+  // Best-effort (not documented), but commonly used in the wild and safe to keep high.
+  ensureEnvMinInt(json.env, "API_TIMEOUT_MS", 600000);
 
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
 }
