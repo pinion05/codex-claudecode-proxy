@@ -9,9 +9,8 @@ import { spawnSync } from "node:child_process";
 
 const DEFAULT_PORT = 8317;
 const DEFAULT_MODEL = "gpt-5.3-codex";
-const LOGICAL_OPUS_MODEL = "codex-opus";
-const LOGICAL_SONNET_MODEL = "codex-sonnet";
-const LOGICAL_HAIKU_MODEL = "codex-haiku";
+const DEFAULT_SONNET_MODEL = "gpt-5.2-codex";
+const DEFAULT_HAIKU_MODEL = "gpt-5.1-codex-mini";
 // CLIProxyAPI releases frequently add new Codex model definitions. If the binary is
 // too old, the proxy can fail requests with "unknown provider for model ...".
 const MIN_CLI_PROXY_API_VERSION = "6.8.15";
@@ -321,28 +320,24 @@ streaming:
 
 payload:
   override:
-    # Claude Code exposes Opus/Sonnet/Haiku tiers. Instead of mapping tiers 1:1
-    # to separate model IDs, we map all tiers to a single upstream model and
-    # control behavior via reasoning.effort.
+    # Claude Code exposes Opus/Sonnet/Haiku tiers. We keep tier-specific model IDs
+    # (so CPA can resolve providers) and control behavior via reasoning.effort.
     - models:
-        - name: "${LOGICAL_OPUS_MODEL}"
+        - name: "${DEFAULT_MODEL}"
           protocol: "codex"
       params:
-        "model": "${DEFAULT_MODEL}"
         "reasoning.effort": "xhigh"
         "reasoning.summary": "auto"
     - models:
-        - name: "${LOGICAL_SONNET_MODEL}"
+        - name: "${DEFAULT_SONNET_MODEL}"
           protocol: "codex"
       params:
-        "model": "${DEFAULT_MODEL}"
         "reasoning.effort": "high"
         "reasoning.summary": "auto"
     - models:
-        - name: "${LOGICAL_HAIKU_MODEL}"
+        - name: "${DEFAULT_HAIKU_MODEL}"
           protocol: "codex"
       params:
-        "model": "${DEFAULT_MODEL}"
         "reasoning.effort": "medium"
         "reasoning.summary": "auto"
 
@@ -530,9 +525,9 @@ function updateClaudeSettings({ claudeSettingsPath, port }) {
   // Avoid global model overrides. Let Claude Code tiers select models.
   delete json.env.ANTHROPIC_MODEL;
   delete json.env.ANTHROPIC_SMALL_FAST_MODEL;
-  json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = LOGICAL_OPUS_MODEL;
-  json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = LOGICAL_SONNET_MODEL;
-  json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = LOGICAL_HAIKU_MODEL;
+  json.env.ANTHROPIC_DEFAULT_OPUS_MODEL = DEFAULT_MODEL;
+  json.env.ANTHROPIC_DEFAULT_SONNET_MODEL = DEFAULT_SONNET_MODEL;
+  json.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = DEFAULT_HAIKU_MODEL;
 
   // Tool flows can be slow with large tool schemas. Keep timeouts generous.
   // https://docs.claude.com/en/docs/claude-code/settings
@@ -700,11 +695,11 @@ async function installFlow(opts) {
   updateClaudeSettings({ claudeSettingsPath, port });
 
   log("Verifying tier reasoning.effort mapping (opus/sonnet/haiku) ...");
-  const okOpus = await verifyReasoningEffort(port, LOGICAL_OPUS_MODEL, "xhigh");
+  const okOpus = await verifyReasoningEffort(port, DEFAULT_MODEL, "xhigh");
   if (!okOpus) fail("expected opus reasoning.effort=xhigh but verification failed");
-  const okSonnet = await verifyReasoningEffort(port, LOGICAL_SONNET_MODEL, "high");
+  const okSonnet = await verifyReasoningEffort(port, DEFAULT_SONNET_MODEL, "high");
   if (!okSonnet) fail("expected sonnet reasoning.effort=high but verification failed");
-  const okHaiku = await verifyReasoningEffort(port, LOGICAL_HAIKU_MODEL, "medium");
+  const okHaiku = await verifyReasoningEffort(port, DEFAULT_HAIKU_MODEL, "medium");
   if (!okHaiku) fail("expected haiku reasoning.effort=medium but verification failed");
 
   log("");
