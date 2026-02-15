@@ -9,8 +9,11 @@ import { spawnSync } from "node:child_process";
 
 const DEFAULT_PORT = 8317;
 const DEFAULT_MODEL = "gpt-5.3-codex";
-const DEFAULT_SONNET_MODEL = "gpt-5.2-codex";
-const DEFAULT_HAIKU_MODEL = "gpt-5.1-codex-mini";
+// Tier selector models: Claude Code tiers select these, and CLIProxyAPI config
+// maps them to different reasoning.effort values. Sonnet/Haiku are rewritten to
+// call DEFAULT_MODEL upstream so the actual model stays fixed.
+const DEFAULT_SONNET_MODEL = "gpt-5.3-codex-spark";
+const DEFAULT_HAIKU_MODEL = "gpt-5-codex-mini";
 // CLIProxyAPI releases frequently add new Codex model definitions. If the binary is
 // too old, the proxy can fail requests with "unknown provider for model ...".
 const MIN_CLI_PROXY_API_VERSION = "6.8.15";
@@ -326,18 +329,21 @@ payload:
         - name: "${DEFAULT_MODEL}"
           protocol: "codex"
       params:
+        "model": "${DEFAULT_MODEL}"
         "reasoning.effort": "xhigh"
         "reasoning.summary": "auto"
     - models:
         - name: "${DEFAULT_SONNET_MODEL}"
           protocol: "codex"
       params:
+        "model": "${DEFAULT_MODEL}"
         "reasoning.effort": "high"
         "reasoning.summary": "auto"
     - models:
         - name: "${DEFAULT_HAIKU_MODEL}"
           protocol: "codex"
       params:
+        "model": "${DEFAULT_MODEL}"
         "reasoning.effort": "medium"
         "reasoning.summary": "auto"
 
