@@ -19,7 +19,8 @@
     "bin/"
   ],
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "engines": {
     "node": ">=18"
