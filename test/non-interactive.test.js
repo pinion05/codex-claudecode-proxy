@@ -340,16 +340,28 @@ test("linux install writes systemd unit files and token sync script", { skip: pr
   );
 
   const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
-  const r = spawnSync(process.execPath, [cli, "install"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      HOME: home,
-      USER: "testuser",
-      XDG_CONFIG_HOME: path.join(home, ".config"),
-      PATH: `${stubBin}:${process.env.PATH || ""}`,
-    },
+  const r = await new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [cli, "install"],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USER: "testuser",
+          XDG_CONFIG_HOME: path.join(home, ".config"),
+          PATH: `${stubBin}:${process.env.PATH || ""}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
   });
 
   assert.equal(
