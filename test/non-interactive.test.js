@@ -122,6 +122,40 @@ function makeCodexAuthJson() {
   );
 }
 
+test("sync-codex-token.mjs writes CPA auth JSON", { skip: process.platform === "win32" }, () => {
+  const home = mkTmpDir("codex-claudecode-proxy-home-");
+  const src = path.join(home, ".codex", "auth.json");
+  const dst = path.join(home, ".cli-proxy-api", "auths", "codex-from-codex-cli.json");
+  writeFile(src, makeCodexAuthJson(), 0o600);
+
+  const script = path.resolve(process.cwd(), "bin", "sync-codex-token.mjs");
+  const r = spawnSync(process.execPath, [script, src, dst], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+    },
+  });
+
+  assert.equal(
+    r.status,
+    0,
+    `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
+  );
+
+  const json = JSON.parse(fs.readFileSync(dst, "utf8"));
+  assert.equal(json.access_token, "test-access-token");
+  assert.equal(json.refresh_token, "test-refresh-token");
+  assert.equal(json.id_token, "test-id-token");
+  assert.equal(json.account_id, "test-account-id");
+  assert.equal(json.last_refresh, "0");
+  assert.equal(json.type, "codex");
+  assert.equal(json.disabled, false);
+
+  const mode = fs.statSync(dst).mode & 0o777;
+  assert.equal(mode, 0o600, `expected mode 0600, got ${(mode).toString(8)}`);
+});
+
 test("install succeeds without --yes (non-interactive only)", async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");

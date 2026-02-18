@@ -368,50 +368,11 @@ function ensureEnvMinInt(env, key, minValue) {
 }
 
 function tokenSyncScript() {
-  return `#!/usr/bin/env bash
-set -euo pipefail
-
-SRC="\${1:-$HOME/.codex/auth.json}"
-DST="\${2:-$HOME/.cli-proxy-api/auths/codex-from-codex-cli.json}"
-
-if [[ ! -f "\${SRC}" ]]; then
-  echo "missing \${SRC} (Codex CLI login required)" >&2
-  exit 1
-fi
-
-access_token="$(plutil -extract tokens.access_token raw -o - "\${SRC}" 2>/dev/null || true)"
-if [[ -z "\${access_token}" ]]; then
-  echo "tokens.access_token missing in \${SRC}" >&2
-  exit 1
-fi
-
-id_token="$(plutil -extract tokens.id_token raw -o - "\${SRC}" 2>/dev/null || true)"
-refresh_token="$(plutil -extract tokens.refresh_token raw -o - "\${SRC}" 2>/dev/null || true)"
-account_id="$(plutil -extract tokens.account_id raw -o - "\${SRC}" 2>/dev/null || true)"
-last_refresh="$(plutil -extract last_refresh raw -o - "\${SRC}" 2>/dev/null || true)"
-
-mkdir -p "$(dirname "\${DST}")"
-
-cat > "\${DST}.tmp" <<JSON
-{
-  "access_token": "\${access_token}",
-  "account_id": "\${account_id}",
-  "disabled": false,
-  "email": "",
-  "expired": "",
-  "id_token": "\${id_token}",
-  "last_refresh": "\${last_refresh}",
-  "refresh_token": "\${refresh_token}",
-  "type": "codex"
-}
-JSON
-
-mv "\${DST}.tmp" "\${DST}"
-chmod 600 "\${DST}"
-`;
+  // Keep token syncing cross-platform by using a Node script template.
+  return fs.readFileSync(new URL("./sync-codex-token.mjs", import.meta.url), "utf8");
 }
 
-function buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog }) {
+function buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog, nodeBin }) {
   const authJsonPath = path.join(homeDir, ".codex", "auth.json");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -419,8 +380,7 @@ function buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog }) {
   <key>Label</key><string>${labelSync}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>-lc</string>
+    <string>${nodeBin}</string>
     <string>${syncScriptPath}</string>
   </array>
   <key>RunAtLoad</key><true/>
@@ -640,7 +600,7 @@ async function installFlow(opts) {
   const proxyDir = path.join(homeDir, ".cli-proxy-api");
   const authDir = path.join(proxyDir, "auths");
   const configFile = path.join(proxyDir, "config.yaml");
-  const syncScriptPath = path.join(proxyDir, "sync-codex-token.sh");
+  const syncScriptPath = path.join(proxyDir, "sync-codex-token.mjs");
   const proxyBin = path.join(homeDir, ".local", "bin", "cli-proxy-api");
   const proxyLog = path.join(proxyDir, "cli-proxy-api.log");
   const tokenSyncLog = path.join(proxyDir, "token-sync.log");
@@ -681,10 +641,10 @@ async function installFlow(opts) {
   writeFileAtomic(syncScriptPath, tokenSyncScript(), 0o755);
 
   log("Syncing token once...");
-  run("/bin/bash", ["-lc", syncScriptPath]);
+  run(process.execPath, [syncScriptPath]);
 
   log("Writing LaunchAgents...");
-  writeFileAtomic(plistSync, buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog }), 0o644);
+  writeFileAtomic(plistSync, buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog, nodeBin: process.execPath }), 0o644);
   writeFileAtomic(plistProxy, buildPlistProxy({ labelProxy, proxyBin, configFile, homeDir, proxyLog }), 0o644);
 
   log("Reloading LaunchAgents...");
