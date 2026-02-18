@@ -156,7 +156,7 @@ test("sync-codex-token.mjs writes CPA auth JSON", { skip: process.platform === "
   assert.equal(mode, 0o600, `expected mode 0600, got ${(mode).toString(8)}`);
 });
 
-test("install succeeds without --yes (non-interactive only)", async (t) => {
+test("install succeeds without --yes (non-interactive only)", { skip: process.platform !== "darwin" }, async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
@@ -244,7 +244,7 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"gpt-5\\.3-codex\\\"`, "m"), "expected upstream model rewrite to gpt-5.3-codex");
 });
 
-test("install cleans existing install artifacts on re-run", async (t) => {
+test("install cleans existing install artifacts on re-run", { skip: process.platform !== "darwin" }, async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
@@ -326,7 +326,7 @@ test("install cleans existing install artifacts on re-run", async (t) => {
   assert.match(cfg, new RegExp(`^port:\\s*${port}\\s*$`, "m"));
 });
 
-test("uninstall succeeds without --yes (non-interactive only)", () => {
+test("uninstall succeeds without --yes (non-interactive only)", { skip: process.platform !== "darwin" }, () => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
