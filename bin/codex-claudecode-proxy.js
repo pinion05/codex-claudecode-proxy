@@ -597,10 +597,22 @@ async function waitForHealthy(port, msTotal = 8000) {
 }
 
 
+let _xdgConfigHomeWarned = false;
 function xdgConfigHome({ homeDir }) {
-  return process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.trim()
-    ? process.env.XDG_CONFIG_HOME.trim()
-    : path.join(homeDir, ".config");
+  const fallback = path.join(homeDir, ".config");
+  const raw = process.env.XDG_CONFIG_HOME;
+  const v = raw ? raw.trim() : "";
+
+  if (!v) return fallback;
+  if (path.isAbsolute(v)) return v;
+
+  // XDG_CONFIG_HOME is expected to be an absolute path. If it's relative
+  // (e.g. ".config"), writing files relative to CWD is surprising/unsafe.
+  if (!_xdgConfigHomeWarned) {
+    _xdgConfigHomeWarned = true;
+    warn(`XDG_CONFIG_HOME is not an absolute path (${JSON.stringify(v)}); falling back to ${fallback}`);
+  }
+  return fallback;
 }
 
 function systemdUserUnitDir({ homeDir }) {
