@@ -14,9 +14,67 @@ npx -y codex-claudecode-proxy
 
 ## Requirements
 
-- macOS only (for now)
+### macOS
+
 - Claude Code is installed
 - You are logged in to Codex CLI
+
+### Linux (Ubuntu / WSL2)
+
+- Ubuntu (including WSL2 Ubuntu) is supported.
+- **systemd is required** — `systemctl --user` must work.
+  - Linux environments without systemd are not supported (the installer fails fast with guidance).
+- Runs in your **user session** as **systemd user units** (no sudo; installs into your home directory).
+  - Optional: keep services running when you log out:
+    ```bash
+    loginctl enable-linger $USER
+    ```
+- Installed user units on Linux:
+  - `cli-proxy-api-linux.service`
+  - `cli-proxy-api-token-sync-linux.service`
+  - `cli-proxy-api-token-sync-linux.path`
+- Token sync watches `~/.codex/auth.json` and mirrors the token into `~/.cli-proxy-api/auths/...`.
+
+#### WSL2: enable systemd
+
+1) Create or edit `/etc/wsl.conf`:
+
+```ini
+[boot]
+systemd=true
+```
+
+2) From **Windows PowerShell**, restart WSL:
+
+```powershell
+wsl --shutdown
+```
+
+3) Re-open your WSL distro and confirm:
+
+```bash
+systemctl --user status
+```
+
+#### Troubleshooting (Linux)
+
+- Verify the systemd **user** session is available:
+  ```bash
+  systemctl --user status
+  ```
+- Check installed units:
+  ```bash
+  systemctl --user status cli-proxy-api-linux.service
+  systemctl --user status cli-proxy-api-token-sync-linux.service
+  systemctl --user status cli-proxy-api-token-sync-linux.path
+  ```
+- View logs:
+  ```bash
+  journalctl --user -u cli-proxy-api-linux.service -n 100 --no-pager
+  ```
+- If `systemctl --user` fails (e.g. "Failed to connect to bus"), your environment doesn't have a systemd user session.
+  - On WSL2, enable systemd via `/etc/wsl.conf` (above) and run `wsl --shutdown`.
+  - On non-systemd Linux environments, this installer is unsupported.
 
 ## Model -> Reasoning Effort Routing
 
