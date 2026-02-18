@@ -92,6 +92,19 @@ exit 0
   );
 }
 
+function writeStubSystemctl(stubBinDir) {
+  const p = path.join(stubBinDir, "systemctl");
+  writeFile(
+    p,
+    `#!/usr/bin/env bash
+set -euo pipefail
+# no-op stub: avoid touching the real systemd during tests
+exit 0
+`,
+    0o755,
+  );
+}
+
 function makeCodexAuthJson() {
   // plutil -extract works with JSON on macOS, so keep this shape.
   return JSON.stringify(
@@ -300,5 +313,64 @@ test("uninstall succeeds without --yes (non-interactive only)", () => {
     r.status,
     0,
     `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
+  );
+});
+
+test("linux install writes systemd unit files and token sync script", { skip: process.platform !== "linux" }, async (t) => {
+  const home = mkTmpDir("codex-claudecode-proxy-home-");
+  const stubBin = path.join(home, "stub-bin");
+  fs.mkdirSync(stubBin, { recursive: true });
+  writeStubSystemctl(stubBin);
+
+  // Required by installFlow().
+  writeFile(path.join(home, ".codex", "auth.json"), makeCodexAuthJson(), 0o600);
+
+  // Skip network download of CLIProxyAPI by pre-creating the binary.
+  const proxyBin = path.join(home, ".local", "bin", "cli-proxy-api");
+  writeFile(proxyBin, "#!/usr/bin/env bash\nexit 0\n", 0o755);
+
+  const { server, port } = await startFakeProxyServer();
+  t.after(() => server.close());
+
+  // Force installer to use the already-configured port without requiring flags.
+  writeFile(
+    path.join(home, ".cli-proxy-api", "config.yaml"),
+    `port: ${port}\nauth-dir: \"~/.cli-proxy-api/auths\"\n`,
+    0o644,
+  );
+
+  const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
+  const r = spawnSync(process.execPath, [cli, "install"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      HOME: home,
+      USER: "testuser",
+      XDG_CONFIG_HOME: path.join(home, ".config"),
+      PATH: `${stubBin}:${process.env.PATH || ""}`,
+    },
+  });
+
+  assert.equal(
+    r.status,
+    0,
+    `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
+  );
+
+  assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-linux.service")),
+    true,
+    "expected linux systemd service unit to exist",
+  );
+  assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-token-sync-linux.path")),
+    true,
+    "expected linux systemd token-sync path unit to exist",
+  );
+  assert.equal(
+    fs.existsSync(path.join(home, ".cli-proxy-api", "sync-codex-token.mjs")),
+    true,
+    "expected token sync script to exist",
   );
 });
