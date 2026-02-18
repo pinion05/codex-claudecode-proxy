@@ -341,6 +341,13 @@ test("linux install writes systemd unit files and token sync script", { skip: pr
 
   const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
   const r = await new Promise((resolve) => {
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      resolve(result);
+    };
+
     const child = spawn(
       process.execPath,
       [cli, "install"],
@@ -361,7 +368,12 @@ test("linux install writes systemd unit files and token sync script", { skip: pr
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (d) => { stdout += d; });
     child.stderr?.on("data", (d) => { stderr += d; });
-    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
+    child.on("error", (err) => {
+      const msg = err?.stack || err?.message || String(err);
+      stderr += `\n[spawn error] ${msg}\n`;
+      finish({ status: 1, stdout, stderr });
+    });
+    child.on("close", (code) => finish({ status: code, stdout, stderr }));
   });
 
   assert.equal(
