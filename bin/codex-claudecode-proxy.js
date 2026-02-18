@@ -443,7 +443,11 @@ async function installCliProxyApiBinary({ proxyBin }) {
 
   log("Downloading CLIProxyAPI release from GitHub...");
   const rel = await fetchJson("https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest");
-  const suffix = `darwin_${arch}.tar.gz`;
+
+  const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : null;
+  if (!platform) fail(`unsupported platform: ${process.platform}`);
+
+  const suffix = `${platform}_${arch}.tar.gz`;
   const asset = (rel.assets || []).find((a) => typeof a?.name === "string" && a.name.includes(suffix));
   if (!asset?.browser_download_url) {
     fail(`could not find asset containing: ${suffix}`);
