@@ -422,6 +422,11 @@ test("linux install writes systemd unit files and token sync script", { skip: pr
     "expected linux systemd service unit to exist",
   );
   assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-token-sync-linux.service")),
+    true,
+    "expected linux systemd token-sync service unit to exist",
+  );
+  assert.equal(
     fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-token-sync-linux.path")),
     true,
     "expected linux systemd token-sync path unit to exist",
