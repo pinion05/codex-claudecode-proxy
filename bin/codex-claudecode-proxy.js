@@ -19,6 +19,10 @@ const DEFAULT_HAIKU_MODEL = "gpt-5.3-codex(medium)";
 // too old, the proxy can fail requests with "unknown provider for model ...".
 const MIN_CLI_PROXY_API_VERSION = "6.8.15";
 
+const LINUX_SYSTEMD_PROXY_UNIT = "cli-proxy-api.service";
+const LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT = "cli-proxy-api-token-sync.service";
+const LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT = "cli-proxy-api-token-sync.path";
+
 function nowTs() {
   return Date.now().toString();
 }
@@ -42,10 +46,10 @@ function usage(code = 0) {
 
 Commands:
   install      Install + configure + start (default)
-  start        Start proxy LaunchAgent
-  stop         Stop proxy + sync LaunchAgents
+  start        Start proxy (LaunchAgents on macOS, systemd --user on Linux)
+  stop         Stop proxy + token sync jobs
   status       Show status
-  uninstall    Remove LaunchAgents + restore Claude Code settings (keeps proxy files)
+  uninstall    Remove service units + restore Claude Code settings (keeps proxy files)
   purge        Uninstall + remove proxy files
   help         Show this help
 
@@ -77,6 +81,14 @@ function parseArgs(argv) {
   }
 
   return out;
+}
+
+function isDarwin() {
+  return process.platform === "darwin";
+}
+
+function isLinux() {
+  return process.platform === "linux";
 }
 
 function exists(p) {
@@ -367,51 +379,59 @@ function ensureEnvMinInt(env, key, minValue) {
   if (!Number.isFinite(cur) || cur < minValue) env[key] = String(minValue);
 }
 
-function tokenSyncScript() {
-  return `#!/usr/bin/env bash
-set -euo pipefail
+function tokenSyncScriptMjs() {
+  return `#!/usr/bin/env node
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-SRC="\${1:-$HOME/.codex/auth.json}"
-DST="\${2:-$HOME/.cli-proxy-api/auths/codex-from-codex-cli.json}"
-
-if [[ ! -f "\${SRC}" ]]; then
-  echo "missing \${SRC} (Codex CLI login required)" >&2
-  exit 1
-fi
-
-access_token="$(plutil -extract tokens.access_token raw -o - "\${SRC}" 2>/dev/null || true)"
-if [[ -z "\${access_token}" ]]; then
-  echo "tokens.access_token missing in \${SRC}" >&2
-  exit 1
-fi
-
-id_token="$(plutil -extract tokens.id_token raw -o - "\${SRC}" 2>/dev/null || true)"
-refresh_token="$(plutil -extract tokens.refresh_token raw -o - "\${SRC}" 2>/dev/null || true)"
-account_id="$(plutil -extract tokens.account_id raw -o - "\${SRC}" 2>/dev/null || true)"
-last_refresh="$(plutil -extract last_refresh raw -o - "\${SRC}" 2>/dev/null || true)"
-
-mkdir -p "$(dirname "\${DST}")"
-
-cat > "\${DST}.tmp" <<JSON
-{
-  "access_token": "\${access_token}",
-  "account_id": "\${account_id}",
-  "disabled": false,
-  "email": "",
-  "expired": "",
-  "id_token": "\${id_token}",
-  "last_refresh": "\${last_refresh}",
-  "refresh_token": "\${refresh_token}",
-  "type": "codex"
+function fail(msg) {
+  console.error(msg);
+  process.exit(1);
 }
-JSON
 
-mv "\${DST}.tmp" "\${DST}"
-chmod 600 "\${DST}"
+const home = os.homedir();
+const src = process.argv[2] || path.join(home, ".codex", "auth.json");
+const dst = process.argv[3] || path.join(home, ".cli-proxy-api", "auths", "codex-from-codex-cli.json");
+
+if (!fs.existsSync(src)) {
+  fail("missing " + src + " (Codex CLI login required)");
+}
+
+let json;
+try {
+  json = JSON.parse(fs.readFileSync(src, "utf8"));
+} catch (e) {
+  fail("failed to parse JSON: " + src);
+}
+
+const access_token = json?.tokens?.access_token || "";
+if (!access_token) {
+  fail("tokens.access_token missing in " + src);
+}
+
+const out = {
+  access_token,
+  account_id: json?.tokens?.account_id || "",
+  disabled: false,
+  email: "",
+  expired: "",
+  id_token: json?.tokens?.id_token || "",
+  last_refresh: json?.last_refresh || "",
+  refresh_token: json?.tokens?.refresh_token || "",
+  type: "codex",
+};
+
+fs.mkdirSync(path.dirname(dst), { recursive: true });
+
+const tmp = dst + ".tmp." + process.pid + "." + Date.now();
+fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + "\\n", "utf8");
+fs.chmodSync(tmp, 0o600);
+fs.renameSync(tmp, dst);
 `;
 }
 
-function buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog }) {
+function buildPlistSync({ labelSync, nodePath, syncScriptPath, homeDir, tokenSyncLog }) {
   const authJsonPath = path.join(homeDir, ".codex", "auth.json");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -419,8 +439,7 @@ function buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog }) {
   <key>Label</key><string>${labelSync}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>-lc</string>
+    <string>${nodePath}</string>
     <string>${syncScriptPath}</string>
   </array>
   <key>RunAtLoad</key><true/>
@@ -454,6 +473,51 @@ function buildPlistProxy({ labelProxy, proxyBin, configFile, homeDir, proxyLog }
 `;
 }
 
+function buildSystemdProxyService({ proxyLog }) {
+  return `[Unit]
+Description=CLIProxyAPI local proxy for Claude Code
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cli-proxy-api --config %h/.cli-proxy-api/config.yaml
+Restart=always
+RestartSec=1
+WorkingDirectory=%h
+StandardOutput=append:${proxyLog}
+StandardError=append:${proxyLog}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+function buildSystemdTokenSyncService({ nodePath, syncScriptPath, tokenSyncLog }) {
+  return `[Unit]
+Description=Sync Codex CLI OAuth token into CLIProxyAPI auths
+
+[Service]
+Type=oneshot
+ExecStart=${nodePath} ${syncScriptPath}
+WorkingDirectory=%h
+StandardOutput=append:${tokenSyncLog}
+StandardError=append:${tokenSyncLog}
+`;
+}
+
+function buildSystemdTokenSyncPath({ authJsonPath }) {
+  return `[Unit]
+Description=Watch Codex auth.json for changes
+
+[Path]
+PathChanged=${authJsonPath}
+PathExists=${authJsonPath}
+Unit=${LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
 async function installCliProxyApiBinary({ proxyBin }) {
   const forceUpdate = process.env.CODEX_CLAUDECODE_PROXY_FORCE_CLI_PROXY_API_UPDATE === "1";
   const installedVersion = getCliProxyApiVersion(proxyBin);
@@ -479,11 +543,14 @@ async function installCliProxyApiBinary({ proxyBin }) {
   const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : null;
   if (!arch) fail(`unsupported architecture: ${process.arch}`);
 
+  const plat = isDarwin() ? "darwin" : isLinux() ? "linux" : null;
+  if (!plat) fail(`unsupported platform: ${process.platform}`);
+
   ensureDir(path.dirname(proxyBin));
 
   log("Downloading CLIProxyAPI release from GitHub...");
   const rel = await fetchJson("https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest");
-  const suffix = `darwin_${arch}.tar.gz`;
+  const suffix = `${plat}_${arch}.tar.gz`;
   const asset = (rel.assets || []).find((a) => typeof a?.name === "string" && a.name.includes(suffix));
   if (!asset?.browser_download_url) {
     fail(`could not find asset containing: ${suffix}`);
@@ -576,21 +643,6 @@ function cleanupClaudeSettings({ claudeSettingsPath }) {
   writeFileAtomic(claudeSettingsPath, `${JSON.stringify(json, null, 2)}\n`, 0o600);
 }
 
-function cleanExistingInstall({ uid, labelProxy, labelSync, plistProxy, plistSync, proxyDir, claudeSettingsPath }) {
-  const hasInstallArtifacts = exists(proxyDir) || exists(plistProxy) || exists(plistSync);
-  if (!hasInstallArtifacts) return false;
-
-  log("Existing install detected; cleaning up before reinstall...");
-  launchctlBootout(uid, labelProxy);
-  launchctlBootout(uid, labelSync);
-  if (exists(plistProxy)) fs.rmSync(plistProxy, { force: true });
-  if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
-  if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
-  // Best-effort cleanup so Claude doesn't keep pointing at a removed proxy.
-  cleanupClaudeSettings({ claudeSettingsPath });
-  return true;
-}
-
 function getUsername() {
   // Prefer $USER for consistency with LaunchAgent labels.
   if (process.env.USER && process.env.USER.trim()) return process.env.USER.trim();
@@ -619,6 +671,52 @@ function launchctlPrint(uid, label) {
   return r.status === 0;
 }
 
+function systemctlUser(args, opts = {}) {
+  return run("systemctl", ["--user", ...args], opts);
+}
+
+function cleanExistingInstallDarwin({ uid, labelProxy, labelSync, plistProxy, plistSync, proxyDir, claudeSettingsPath }) {
+  const hasInstallArtifacts = exists(proxyDir) || exists(plistProxy) || exists(plistSync);
+  if (!hasInstallArtifacts) return false;
+
+  log("Existing install detected; cleaning up before reinstall...");
+  launchctlBootout(uid, labelProxy);
+  launchctlBootout(uid, labelSync);
+  if (exists(plistProxy)) fs.rmSync(plistProxy, { force: true });
+  if (exists(plistSync)) fs.rmSync(plistSync, { force: true });
+  if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
+  // Best-effort cleanup so Claude doesn't keep pointing at a removed proxy.
+  cleanupClaudeSettings({ claudeSettingsPath });
+  return true;
+}
+
+function cleanExistingInstallLinux({ unitDir, proxyDir, claudeSettingsPath }) {
+  const unitProxy = path.join(unitDir, LINUX_SYSTEMD_PROXY_UNIT);
+  const unitSyncSvc = path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT);
+  const unitSyncPath = path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT);
+  const hasInstallArtifacts = exists(proxyDir) || exists(unitProxy) || exists(unitSyncSvc) || exists(unitSyncPath);
+  if (!hasInstallArtifacts) return false;
+
+  log("Existing install detected; cleaning up before reinstall...");
+
+  // Best-effort: unit might not be enabled/started.
+  systemctlUser(["stop", LINUX_SYSTEMD_PROXY_UNIT], { allowFail: true });
+  systemctlUser(["stop", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true });
+  systemctlUser(["stop", LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT], { allowFail: true });
+  systemctlUser(["disable", LINUX_SYSTEMD_PROXY_UNIT], { allowFail: true });
+  systemctlUser(["disable", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true });
+  systemctlUser(["disable", LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT], { allowFail: true });
+
+  if (exists(unitProxy)) fs.rmSync(unitProxy, { force: true });
+  if (exists(unitSyncSvc)) fs.rmSync(unitSyncSvc, { force: true });
+  if (exists(unitSyncPath)) fs.rmSync(unitSyncPath, { force: true });
+  systemctlUser(["daemon-reload"], { allowFail: true });
+
+  if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
+  cleanupClaudeSettings({ claudeSettingsPath });
+  return true;
+}
+
 async function waitForHealthy(port, msTotal = 8000) {
   const started = Date.now();
   while (Date.now() - started < msTotal) {
@@ -628,11 +726,7 @@ async function waitForHealthy(port, msTotal = 8000) {
   return false;
 }
 
-async function installFlow(opts) {
-  if (process.platform !== "darwin") {
-    fail("macOS only (LaunchAgents-based install).");
-  }
-
+async function installFlowDarwin() {
   const homeDir = os.homedir();
   const username = getUsername();
   const uid = getUid();
@@ -640,7 +734,8 @@ async function installFlow(opts) {
   const proxyDir = path.join(homeDir, ".cli-proxy-api");
   const authDir = path.join(proxyDir, "auths");
   const configFile = path.join(proxyDir, "config.yaml");
-  const syncScriptPath = path.join(proxyDir, "sync-codex-token.sh");
+  const syncScriptPath = path.join(proxyDir, "sync-codex-token.mjs");
+  const nodePath = process.execPath;
   const proxyBin = path.join(homeDir, ".local", "bin", "cli-proxy-api");
   const proxyLog = path.join(proxyDir, "cli-proxy-api.log");
   const tokenSyncLog = path.join(proxyDir, "token-sync.log");
@@ -659,7 +754,7 @@ async function installFlow(opts) {
     fail(`missing ${codexAuth} (Codex CLI login required)`);
   }
 
-  cleanExistingInstall({
+  cleanExistingInstallDarwin({
     uid,
     labelProxy,
     labelSync,
@@ -678,13 +773,13 @@ async function installFlow(opts) {
 
   log("Writing config + token sync script...");
   writeFileAtomic(configFile, proxyConfigYaml({ port }), 0o644);
-  writeFileAtomic(syncScriptPath, tokenSyncScript(), 0o755);
+  writeFileAtomic(syncScriptPath, tokenSyncScriptMjs(), 0o755);
 
   log("Syncing token once...");
-  run("/bin/bash", ["-lc", syncScriptPath]);
+  run(nodePath, [syncScriptPath]);
 
   log("Writing LaunchAgents...");
-  writeFileAtomic(plistSync, buildPlistSync({ labelSync, syncScriptPath, homeDir, tokenSyncLog }), 0o644);
+  writeFileAtomic(plistSync, buildPlistSync({ labelSync, nodePath, syncScriptPath, homeDir, tokenSyncLog }), 0o644);
   writeFileAtomic(plistProxy, buildPlistProxy({ labelProxy, proxyBin, configFile, homeDir, proxyLog }), 0o644);
 
   log("Reloading LaunchAgents...");
@@ -717,8 +812,91 @@ async function installFlow(opts) {
   log("- Next: run 'claude'");
 }
 
-async function startFlow(opts) {
-  if (process.platform !== "darwin") fail("macOS only.");
+async function installFlowLinux() {
+  const homeDir = os.homedir();
+
+  const proxyDir = path.join(homeDir, ".cli-proxy-api");
+  const authDir = path.join(proxyDir, "auths");
+  const configFile = path.join(proxyDir, "config.yaml");
+  const syncScriptPath = path.join(proxyDir, "sync-codex-token.mjs");
+  const nodePath = process.execPath;
+  const proxyBin = path.join(homeDir, ".local", "bin", "cli-proxy-api");
+  const proxyLog = path.join(proxyDir, "cli-proxy-api.log");
+  const tokenSyncLog = path.join(proxyDir, "token-sync.log");
+  const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
+  const unitDir = path.join(homeDir, ".config", "systemd", "user");
+
+  // Compute port before cleaning, so re-running install keeps existing config-based port.
+  const port = await resolveProxyPort({ configFile });
+
+  const codexAuth = path.join(homeDir, ".codex", "auth.json");
+  if (!exists(codexAuth)) {
+    fail(`missing ${codexAuth} (Codex CLI login required)`);
+  }
+
+  cleanExistingInstallLinux({ unitDir, proxyDir, claudeSettingsPath });
+
+  ensureDir(proxyDir);
+  ensureDir(authDir);
+  ensureDir(path.dirname(proxyBin));
+  ensureDir(unitDir);
+
+  await installCliProxyApiBinary({ proxyBin });
+
+  log("Writing config + token sync script...");
+  writeFileAtomic(configFile, proxyConfigYaml({ port }), 0o644);
+  writeFileAtomic(syncScriptPath, tokenSyncScriptMjs(), 0o755);
+
+  log("Syncing token once...");
+  run(nodePath, [syncScriptPath]);
+
+  log("Writing systemd --user units...");
+  writeFileAtomic(path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT), buildSystemdTokenSyncService({
+    nodePath,
+    syncScriptPath: "%h/.cli-proxy-api/sync-codex-token.mjs",
+    tokenSyncLog,
+  }), 0o644);
+  writeFileAtomic(path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT), buildSystemdTokenSyncPath({
+    authJsonPath: "%h/.codex/auth.json",
+  }), 0o644);
+  writeFileAtomic(path.join(unitDir, LINUX_SYSTEMD_PROXY_UNIT), buildSystemdProxyService({
+    proxyLog,
+  }), 0o644);
+
+  log("Reloading systemd --user units...");
+  systemctlUser(["daemon-reload"]);
+  systemctlUser(["enable", "--now", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT]);
+  systemctlUser(["enable", "--now", LINUX_SYSTEMD_PROXY_UNIT]);
+
+  const healthy = await waitForHealthy(port, 10000);
+  if (!healthy) fail(`proxy did not become healthy (check ${proxyLog})`);
+
+  log("Updating Claude Code settings...");
+  updateClaudeSettings({ claudeSettingsPath, port });
+
+  log("Verifying tier reasoning.effort mapping (opus/sonnet/haiku) ...");
+  const okOpus = await verifyReasoningEffort(port, DEFAULT_OPUS_MODEL, "xhigh");
+  if (!okOpus) fail("expected opus reasoning.effort=xhigh but verification failed");
+  const okSonnet = await verifyReasoningEffort(port, DEFAULT_SONNET_MODEL, "high");
+  if (!okSonnet) fail("expected sonnet reasoning.effort=high but verification failed");
+  const okHaiku = await verifyReasoningEffort(port, DEFAULT_HAIKU_MODEL, "medium");
+  if (!okHaiku) fail("expected haiku reasoning.effort=medium but verification failed");
+
+  log("");
+  log("All done.");
+  log(`- Proxy: http://127.0.0.1:${port}`);
+  log(`- Config: ${configFile}`);
+  log(`- Claude settings: ${claudeSettingsPath}`);
+  log("- Next: run 'claude'");
+}
+
+async function installFlow() {
+  if (isDarwin()) return await installFlowDarwin();
+  if (isLinux()) return await installFlowLinux();
+  fail("unsupported platform (macOS or Linux required)");
+}
+
+async function startFlowDarwin() {
   const homeDir = os.homedir();
   const username = getUsername();
   const uid = getUid();
@@ -742,8 +920,26 @@ async function startFlow(opts) {
   log("proxy started");
 }
 
-async function stopFlow() {
-  if (process.platform !== "darwin") fail("macOS only.");
+async function startFlowLinux() {
+  const homeDir = os.homedir();
+  const configFile = path.join(homeDir, ".cli-proxy-api", "config.yaml");
+  const port = readPortFromProxyConfig(configFile) ?? DEFAULT_PORT;
+
+  systemctlUser(["start", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true });
+  systemctlUser(["start", LINUX_SYSTEMD_PROXY_UNIT]);
+
+  const healthy = await waitForHealthy(port, 10000);
+  if (!healthy) fail("proxy did not become healthy");
+  log("proxy started");
+}
+
+async function startFlow() {
+  if (isDarwin()) return await startFlowDarwin();
+  if (isLinux()) return await startFlowLinux();
+  fail("unsupported platform (macOS or Linux required)");
+}
+
+async function stopFlowDarwin() {
   const username = getUsername();
   const uid = getUid();
   const labelProxy = `com.${username}.cli-proxy-api`;
@@ -753,13 +949,27 @@ async function stopFlow() {
   log("proxy stopped (launchagents unloaded)");
 }
 
-async function statusFlow(opts) {
+async function stopFlowLinux() {
+  systemctlUser(["stop", LINUX_SYSTEMD_PROXY_UNIT], { allowFail: true });
+  systemctlUser(["stop", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true });
+  systemctlUser(["stop", LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT], { allowFail: true });
+  log("proxy stopped (systemd units stopped)");
+}
+
+async function stopFlow() {
+  if (isDarwin()) return await stopFlowDarwin();
+  if (isLinux()) return await stopFlowLinux();
+  fail("unsupported platform (macOS or Linux required)");
+}
+
+async function statusFlow() {
   const homeDir = os.homedir();
   const configFile = path.join(homeDir, ".cli-proxy-api", "config.yaml");
   const port = readPortFromProxyConfig(configFile) ?? DEFAULT_PORT;
   const portOk = await proxyHealthcheck(port);
   log(`healthcheck: ${portOk ? "OK" : "NOT RUNNING"} (http://127.0.0.1:${port}/v1/models)`);
-  if (process.platform === "darwin") {
+
+  if (isDarwin()) {
     const username = getUsername();
     const uid = getUid();
     const labelProxy = `com.${username}.cli-proxy-api`;
@@ -767,10 +977,16 @@ async function statusFlow(opts) {
     log(`launchctl proxy job: ${launchctlPrint(uid, labelProxy) ? "loaded" : "not loaded"}`);
     log(`launchctl token-sync job: ${launchctlPrint(uid, labelSync) ? "loaded" : "not loaded"}`);
   }
+
+  if (isLinux()) {
+    const proxyActive = systemctlUser(["is-active", "--quiet", LINUX_SYSTEMD_PROXY_UNIT], { allowFail: true }).status === 0;
+    const syncPathActive = systemctlUser(["is-active", "--quiet", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true }).status === 0;
+    log(`systemd proxy unit: ${proxyActive ? "active" : "inactive"} (${LINUX_SYSTEMD_PROXY_UNIT})`);
+    log(`systemd token-sync path: ${syncPathActive ? "active" : "inactive"} (${LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT})`);
+  }
 }
 
-async function uninstallFlow(opts) {
-  if (process.platform !== "darwin") fail("macOS only.");
+async function uninstallFlowDarwin(opts) {
   const homeDir = os.homedir();
   const username = getUsername();
   const uid = getUid();
@@ -800,6 +1016,44 @@ async function uninstallFlow(opts) {
   }
 
   log("uninstall completed (proxy files left in place)");
+}
+
+async function uninstallFlowLinux(opts) {
+  const homeDir = os.homedir();
+  const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
+  const proxyDir = path.join(homeDir, ".cli-proxy-api");
+  const proxyBin = path.join(homeDir, ".local", "bin", "cli-proxy-api");
+  const unitDir = path.join(homeDir, ".config", "systemd", "user");
+
+  systemctlUser(["stop", LINUX_SYSTEMD_PROXY_UNIT], { allowFail: true });
+  systemctlUser(["stop", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true });
+  systemctlUser(["stop", LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT], { allowFail: true });
+
+  systemctlUser(["disable", LINUX_SYSTEMD_PROXY_UNIT], { allowFail: true });
+  systemctlUser(["disable", LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT], { allowFail: true });
+  systemctlUser(["disable", LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT], { allowFail: true });
+
+  if (exists(path.join(unitDir, LINUX_SYSTEMD_PROXY_UNIT))) fs.rmSync(path.join(unitDir, LINUX_SYSTEMD_PROXY_UNIT), { force: true });
+  if (exists(path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT))) fs.rmSync(path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_SERVICE_UNIT), { force: true });
+  if (exists(path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT))) fs.rmSync(path.join(unitDir, LINUX_SYSTEMD_TOKEN_SYNC_PATH_UNIT), { force: true });
+  systemctlUser(["daemon-reload"], { allowFail: true });
+
+  cleanupClaudeSettings({ claudeSettingsPath });
+
+  if (opts.command === "purge") {
+    if (exists(proxyDir)) fs.rmSync(proxyDir, { recursive: true, force: true });
+    if (exists(proxyBin)) fs.rmSync(proxyBin, { force: true });
+    log("purge completed (proxy files removed)");
+    return;
+  }
+
+  log("uninstall completed (proxy files left in place)");
+}
+
+async function uninstallFlow(opts) {
+  if (isDarwin()) return await uninstallFlowDarwin(opts);
+  if (isLinux()) return await uninstallFlowLinux(opts);
+  fail("unsupported platform (macOS or Linux required)");
 }
 
 async function main() {

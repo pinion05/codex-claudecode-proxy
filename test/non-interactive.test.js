@@ -92,6 +92,26 @@ exit 0
   );
 }
 
+function writeStubSystemctl(stubBinDir) {
+  const p = path.join(stubBinDir, "systemctl");
+  writeFile(
+    p,
+    `#!/usr/bin/env bash
+set -euo pipefail
+# no-op stub: avoid touching the real systemd during tests
+exit 0
+`,
+    0o755,
+  );
+}
+
+function writeStubServiceManager(stubBinDir) {
+  if (process.platform === "darwin") return writeStubLaunchctl(stubBinDir);
+  if (process.platform === "linux") return writeStubSystemctl(stubBinDir);
+  // No-op on unsupported platforms (package.json blocks these).
+  return;
+}
+
 function makeCodexAuthJson() {
   // plutil -extract works with JSON on macOS, so keep this shape.
   return JSON.stringify(
@@ -113,7 +133,7 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
-  writeStubLaunchctl(stubBin);
+  writeStubServiceManager(stubBin);
 
   // Required by installFlow().
   writeFile(path.join(home, ".codex", "auth.json"), makeCodexAuthJson(), 0o600);
@@ -201,7 +221,7 @@ test("install cleans existing install artifacts on re-run", async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
-  writeStubLaunchctl(stubBin);
+  writeStubServiceManager(stubBin);
 
   // Required by installFlow().
   writeFile(path.join(home, ".codex", "auth.json"), makeCodexAuthJson(), 0o600);
@@ -283,7 +303,7 @@ test("uninstall succeeds without --yes (non-interactive only)", () => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
-  writeStubLaunchctl(stubBin);
+  writeStubServiceManager(stubBin);
 
   const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
   const r = spawnSync(process.execPath, [cli, "uninstall"], {
