@@ -8,10 +8,10 @@ import { spawnSync, spawn } from "node:child_process";
 
 // Tier selectors (what Claude Code will send as `model` when you pick Opus/Sonnet/Haiku).
 // Keep UX explicit: effort is encoded in the visible model name, while upstream
-// requests are rewritten to gpt-5.3-codex.
-const EXPECTED_OPUS_MODEL = "gpt-5.3-codex(xhigh)";
-const EXPECTED_SONNET_MODEL = "gpt-5.3-codex(high)";
-const EXPECTED_HAIKU_MODEL = "gpt-5.3-codex(medium)";
+// requests are rewritten to gpt-5.4.
+const EXPECTED_OPUS_MODEL = "gpt-5.4(xhigh)";
+const EXPECTED_SONNET_MODEL = "gpt-5.4(high)";
+const EXPECTED_HAIKU_MODEL = "gpt-5.4(medium)";
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -194,7 +194,7 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"xhigh\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"high\\\"`, "m"));
   assert.match(cfg, new RegExp(`\\\"reasoning\\.effort\\\"\\:\\s*\\\"medium\\\"`, "m"));
-  assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"gpt-5\\.3-codex\\\"`, "m"), "expected upstream model rewrite to gpt-5.3-codex");
+  assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"gpt-5\\.4\\\"`, "m"), "expected upstream model rewrite to gpt-5.4");
 });
 
 test("install cleans existing install artifacts on re-run", async (t) => {

@@ -5,7 +5,7 @@
 ## What this repo is
 - `codex-claudecode-proxy`는 macOS에서 동작하는 로컬 프록시 설치/관리 CLI입니다.
 - `~/.codex/auth.json`의 OAuth 토큰을 읽어 `CLIProxyAPI`를 통해 Claude Code와 연결합니다.
-- 기본 upstream 모델은 `gpt-5.3-codex`입니다.
+- 기본 upstream 모델은 `gpt-5.4`입니다.
 
 ## Repo layout
 - `bin/codex-claudecode-proxy.js`: 전체 CLI 로직(설치·시작·중지·상태·제거)
@@ -34,7 +34,7 @@
   8) `/v1/models` health check
   9) `~/.claude/settings.json` 업데이트
      - `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 설정
-     - tier별 기본 모델(`gpt-5.3-codex(xhigh|high|medium)`) 주입
+     - tier별 기본 모델(`gpt-5.4(xhigh|high|medium)`) 주입
      - 타임아웃 기본값 보강
   10) `/v1/responses`으로 Opus/Sonnet/Haiku `reasoning.effort` 동작 검증
 - `start`: 기존 plists가 있으면 proxy + sync Agent 시작
