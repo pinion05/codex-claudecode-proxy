@@ -92,6 +92,19 @@ exit 0
   );
 }
 
+function writeStubSystemctl(stubBinDir) {
+  const p = path.join(stubBinDir, "systemctl");
+  writeFile(
+    p,
+    `#!/usr/bin/env bash
+set -euo pipefail
+# no-op stub: avoid touching the real systemd during tests
+exit 0
+`,
+    0o755,
+  );
+}
+
 function makeCodexAuthJson() {
   // plutil -extract works with JSON on macOS, so keep this shape.
   return JSON.stringify(
@@ -109,7 +122,41 @@ function makeCodexAuthJson() {
   );
 }
 
-test("install succeeds without --yes (non-interactive only)", async (t) => {
+test("sync-codex-token.mjs writes CPA auth JSON", { skip: process.platform === "win32" }, () => {
+  const home = mkTmpDir("codex-claudecode-proxy-home-");
+  const src = path.join(home, ".codex", "auth.json");
+  const dst = path.join(home, ".cli-proxy-api", "auths", "codex-from-codex-cli.json");
+  writeFile(src, makeCodexAuthJson(), 0o600);
+
+  const script = path.resolve(process.cwd(), "bin", "sync-codex-token.mjs");
+  const r = spawnSync(process.execPath, [script, src, dst], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+    },
+  });
+
+  assert.equal(
+    r.status,
+    0,
+    `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
+  );
+
+  const json = JSON.parse(fs.readFileSync(dst, "utf8"));
+  assert.equal(json.access_token, "test-access-token");
+  assert.equal(json.refresh_token, "test-refresh-token");
+  assert.equal(json.id_token, "test-id-token");
+  assert.equal(json.account_id, "test-account-id");
+  assert.equal(json.last_refresh, "0");
+  assert.equal(json.type, "codex");
+  assert.equal(json.disabled, false);
+
+  const mode = fs.statSync(dst).mode & 0o777;
+  assert.equal(mode, 0o600, `expected mode 0600, got ${(mode).toString(8)}`);
+});
+
+test("install succeeds without --yes (non-interactive only)", { skip: process.platform !== "darwin" }, async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
@@ -197,7 +244,7 @@ test("install succeeds without --yes (non-interactive only)", async (t) => {
   assert.match(cfg, new RegExp(`\\\"model\\\"\\:\\s*\\\"gpt-5\\.4\\\"`, "m"), "expected upstream model rewrite to gpt-5.4");
 });
 
-test("install cleans existing install artifacts on re-run", async (t) => {
+test("install cleans existing install artifacts on re-run", { skip: process.platform !== "darwin" }, async (t) => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
@@ -279,7 +326,7 @@ test("install cleans existing install artifacts on re-run", async (t) => {
   assert.match(cfg, new RegExp(`^port:\\s*${port}\\s*$`, "m"));
 });
 
-test("uninstall succeeds without --yes (non-interactive only)", () => {
+test("uninstall succeeds without --yes (non-interactive only)", { skip: process.platform !== "darwin" }, () => {
   const home = mkTmpDir("codex-claudecode-proxy-home-");
   const stubBin = path.join(home, "stub-bin");
   fs.mkdirSync(stubBin, { recursive: true });
@@ -302,3 +349,172 @@ test("uninstall succeeds without --yes (non-interactive only)", () => {
     `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
   );
 });
+
+test("linux install writes systemd unit files and token sync script", { skip: process.platform !== "linux" }, async (t) => {
+  const home = mkTmpDir("codex-claudecode-proxy-home-");
+  const stubBin = path.join(home, "stub-bin");
+  fs.mkdirSync(stubBin, { recursive: true });
+  writeStubSystemctl(stubBin);
+
+  // Required by installFlow().
+  writeFile(path.join(home, ".codex", "auth.json"), makeCodexAuthJson(), 0o600);
+
+  // Skip network download of CLIProxyAPI by pre-creating the binary.
+  const proxyBin = path.join(home, ".local", "bin", "cli-proxy-api");
+  writeFile(proxyBin, "#!/usr/bin/env bash\nexit 0\n", 0o755);
+
+  const { server, port } = await startFakeProxyServer();
+  t.after(() => server.close());
+
+  // Force installer to use the already-configured port without requiring flags.
+  writeFile(
+    path.join(home, ".cli-proxy-api", "config.yaml"),
+    `port: ${port}\nauth-dir: \"~/.cli-proxy-api/auths\"\n`,
+    0o644,
+  );
+
+  const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
+  const r = await new Promise((resolve) => {
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      resolve(result);
+    };
+
+    const child = spawn(
+      process.execPath,
+      [cli, "install"],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USER: "testuser",
+          XDG_CONFIG_HOME: path.join(home, ".config"),
+          PATH: `${stubBin}:${process.env.PATH || ""}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("error", (err) => {
+      const msg = err?.stack || err?.message || String(err);
+      stderr += `\n[spawn error] ${msg}\n`;
+      finish({ status: 1, stdout, stderr });
+    });
+    child.on("close", (code) => finish({ status: code, stdout, stderr }));
+  });
+
+  assert.equal(
+    r.status,
+    0,
+    `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
+  );
+
+  assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-linux.service")),
+    true,
+    "expected linux systemd service unit to exist",
+  );
+  assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-token-sync-linux.service")),
+    true,
+    "expected linux systemd token-sync service unit to exist",
+  );
+  assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-token-sync-linux.path")),
+    true,
+    "expected linux systemd token-sync path unit to exist",
+  );
+  assert.equal(
+    fs.existsSync(path.join(home, ".cli-proxy-api", "sync-codex-token.mjs")),
+    true,
+    "expected token sync script to exist",
+  );
+});
+
+test("linux install does not write units relative to CWD when XDG_CONFIG_HOME is relative", { skip: process.platform !== "linux" }, async (t) => {
+  const home = mkTmpDir("codex-claudecode-proxy-home-");
+  const cwd = mkTmpDir("codex-claudecode-proxy-cwd-");
+  const stubBin = path.join(home, "stub-bin");
+  fs.mkdirSync(stubBin, { recursive: true });
+  writeStubSystemctl(stubBin);
+
+  // Required by installFlow().
+  writeFile(path.join(home, ".codex", "auth.json"), makeCodexAuthJson(), 0o600);
+
+  // Skip network download of CLIProxyAPI by pre-creating the binary.
+  const proxyBin = path.join(home, ".local", "bin", "cli-proxy-api");
+  writeFile(proxyBin, "#!/usr/bin/env bash\nexit 0\n", 0o755);
+
+  const { server, port } = await startFakeProxyServer();
+  t.after(() => server.close());
+
+  // Force installer to use the already-configured port without requiring flags.
+  writeFile(
+    path.join(home, ".cli-proxy-api", "config.yaml"),
+    `port: ${port}\nauth-dir: \"~/.cli-proxy-api/auths\"\n`,
+    0o644,
+  );
+
+  const cli = path.resolve(process.cwd(), "bin", "codex-claudecode-proxy.js");
+  const r = await new Promise((resolve) => {
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      resolve(result);
+    };
+
+    const child = spawn(
+      process.execPath,
+      [cli, "install"],
+      {
+        cwd,
+        env: {
+          ...process.env,
+          HOME: home,
+          USER: "testuser",
+          XDG_CONFIG_HOME: ".config",
+          PATH: `${stubBin}:${process.env.PATH || ""}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("error", (err) => {
+      const msg = err?.stack || err?.message || String(err);
+      stderr += `\n[spawn error] ${msg}\n`;
+      finish({ status: 1, stdout, stderr });
+    });
+    child.on("close", (code) => finish({ status: code, stdout, stderr }));
+  });
+
+  assert.equal(
+    r.status,
+    0,
+    `expected exit 0\nstdout:\n${r.stdout || ""}\nstderr:\n${r.stderr || ""}`,
+  );
+
+  assert.equal(
+    fs.existsSync(path.join(home, ".config", "systemd", "user", "cli-proxy-api-linux.service")),
+    true,
+    "expected linux systemd service unit to be written under $HOME/.config",
+  );
+  assert.equal(
+    fs.existsSync(path.join(cwd, ".config", "systemd", "user", "cli-proxy-api-linux.service")),
+    false,
+    "expected linux systemd service unit to not be written under CWD/.config",
+  );
+});
+
