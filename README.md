@@ -23,10 +23,10 @@ npx -y codex-claudecode-proxy
 This installer configures Claude Code's Opus/Sonnet/Haiku tiers so that:
 
 - The visible model names encode the desired reasoning effort:
-  - Opus: `gpt-5.3-codex(xhigh)`
-  - Sonnet: `gpt-5.3-codex(high)`
-  - Haiku: `gpt-5.3-codex(medium)`
-- CLIProxyAPI rewrites all tier requests to call the same upstream model (`gpt-5.3-codex`),
+  - Opus: `gpt-5.4(xhigh)`
+  - Sonnet: `gpt-5.4(high)`
+  - Haiku: `gpt-5.4(medium)`
+- CLIProxyAPI rewrites all tier requests to call the same upstream model (`gpt-5.4`),
   while setting `reasoning.effort` to `xhigh` / `high` / `medium` based on the tier.
 
 In other words: tier selection controls reasoning level, not the upstream model.

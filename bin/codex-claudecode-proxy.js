@@ -8,16 +8,16 @@ import net from "node:net";
 import { spawnSync } from "node:child_process";
 
 const DEFAULT_PORT = 8317;
-const DEFAULT_MODEL = "gpt-5.3-codex";
+const DEFAULT_MODEL = "gpt-5.4";
 // Tier selector models: Claude Code tiers select these, and CLIProxyAPI config
 // maps them to different reasoning.effort values. Sonnet/Haiku are rewritten to
 // call DEFAULT_MODEL upstream so the actual model stays fixed.
-const DEFAULT_OPUS_MODEL = "gpt-5.3-codex(xhigh)";
-const DEFAULT_SONNET_MODEL = "gpt-5.3-codex(high)";
-const DEFAULT_HAIKU_MODEL = "gpt-5.3-codex(medium)";
+const DEFAULT_OPUS_MODEL = "gpt-5.4(xhigh)";
+const DEFAULT_SONNET_MODEL = "gpt-5.4(high)";
+const DEFAULT_HAIKU_MODEL = "gpt-5.4(medium)";
 // CLIProxyAPI releases frequently add new Codex model definitions. If the binary is
 // too old, the proxy can fail requests with "unknown provider for model ...".
-const MIN_CLI_PROXY_API_VERSION = "6.8.15";
+const MIN_CLI_PROXY_API_VERSION = "6.8.44";
 
 function nowTs() {
   return Date.now().toString();
